@@ -1,0 +1,45 @@
+# Fly.io deployment for Live Chat Aggregator.
+#
+# Important: app_name on Fly.io must be globally unique. Edit `app` below
+# before your first `fly launch` (e.g. "flow-live-chat", "dhmm-live-chat",
+# something tied to you). Or run `fly launch` and let it pick a name.
+
+app = "live-chat-aggregator"
+primary_region = "iad"  # US East. Change to a region near you / your viewers.
+
+[build]
+  # Use the Dockerfile in this directory.
+
+[env]
+  PORT = "3000"
+  NODE_ENV = "production"
+  DATA_DIR = "/data"
+
+# Persistent storage for channels.json. Fly Volumes survive deploys and
+# restarts. 1 GB is the smallest size; we use a few KB. ~$0.15/mo.
+[mounts]
+  source = "lca_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Keep the machine running 24/7 — required for the channel-polling loop.
+  # Auto-stopping would pause polling and miss the start of live broadcasts.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/api/state"
+
+# Smallest machine — plenty for this workload, lowest cost.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1

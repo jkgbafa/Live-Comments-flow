@@ -2,129 +2,179 @@
 
 Pulls live chat from one or more **YouTube live streams** in real-time and shows them all together in a single dark, Restream-style viewer page.
 
-- Multi-stream: paste 1 or 10 YouTube live URLs, all chats merge into one feed
-- Real-time: WebSocket push, no polling delay
+**Channel-based watching** — paste a YouTube channel URL once. The system polls it forever and auto-pulls chat whenever the channel goes live. You configure once, never touch admin again.
+
+## Highlights
+
+- Multi-channel: watch as many YouTube channels as you want
+- Auto-detect: poll each channel's `/live` endpoint every 60s; spawn chat scraper when live, tear down when stream ends
+- Persistent: channel list saved to disk, survives restarts/deploys
+- Real-time: WebSocket push, no polling delay on the viewer side
 - Dark UI: avatar, handle, timestamp, message, source icon, owner/mod/member badges
 - No YouTube API key required (uses the public live-chat continuation endpoint)
-- Run on your laptop, share via Cloudflare Tunnel — same URL every time, free
-- Add/remove streams at runtime through the admin page (no restart, no code edits)
+- One-click Fly.io deploy: free, always-on, stable URL
 
 ## What's included
 
 ```
 live-chat-aggregator/
-├── server.js              Express + WebSocket server
-├── lib/youtube-source.js  YouTube live-chat scraper (auto-reconnect)
+├── server.js                    Express + WebSocket server
+├── lib/
+│   ├── youtube-source.js        Live-chat scraper for one video (auto-reconnect)
+│   ├── youtube-channel.js       Channel URL parser + live-stream detector
+│   ├── channel-watcher.js       Polls a channel, spawns/tears down sources
+│   └── store.js                 channels.json persistence
 ├── public/
-│   ├── index.html         Viewer page (the public one you share)
-│   ├── viewer.css         Dark theme
-│   ├── viewer.js          Client-side WebSocket + rendering
-│   └── admin.html         Admin page — paste/remove URLs while running
+│   ├── index.html               Public viewer page
+│   ├── viewer.css               Dark theme
+│   ├── viewer.js                Client-side WebSocket + rendering
+│   └── admin.html               Admin page — manage channels + direct sources
+├── Dockerfile                   Production container
+├── fly.toml                     Fly.io deployment config
 └── package.json
 ```
 
-## First-time setup
+## How channel watching works
+
+```
+You paste a channel URL once → click Add & Start watching
+   ↓
+Server polls youtube.com/@channel/live every 60s in the background
+   ↓
+Channel goes live  →  spawns chat source  →  messages flow into viewer
+   ↓
+Stream ends        →  source cleans up    →  channel returns to "watching"
+   ↓
+Channel goes live again next time → auto-detected → page lights up
+```
+
+You only ever touch admin to **add a new channel** or **remove an old one**.
+
+## Local development
 
 ```bash
 cd ~/Claude/live-chat-aggregator
 npm install
+ADMIN_TOKEN=any-random-string npm start
 ```
 
-You also need `cloudflared` installed (already installed on this Mac at `~/.local/bin/cloudflared`).
+Open:
+- Viewer: http://localhost:3000/
+- Admin:  http://localhost:3000/admin.html?token=any-random-string
 
-## Running it for an event
-
-You'll need two terminal windows.
-
-### Terminal 1 — start the app
-
-```bash
-cd ~/Claude/live-chat-aggregator
-ADMIN_TOKEN=pick-something-secret npm start
-```
-
-Replace `pick-something-secret` with any random string. This is the password for the admin page; viewers don't need it.
-
-You'll see:
-```
-Live Chat Aggregator listening on http://localhost:3000
-  Viewer:  http://localhost:3000/
-  Admin:   http://localhost:3000/admin.html?token=pick-something-secret
-```
-
-### Terminal 2 — start the public tunnel
-
-**Quick mode (random URL each time, zero setup):**
+To expose on a public URL while running locally (event hosted from your laptop):
 
 ```bash
 cloudflared tunnel --url http://localhost:3000
 ```
 
-It prints a URL like `https://random-words-1234.trycloudflare.com`. That's the public viewer link — share it with anyone.
+## Deploying to Fly.io (recommended for "always-on, never touch a terminal again")
 
-**Permanent URL (recommended for "Tuesday + Friday + every event after"):**
+### One-time setup (10 minutes)
 
-Set up a named tunnel once, then it has the same URL forever. From a Cloudflare account you log into yourself:
+1. **Sign up at https://fly.io/app/sign-up** (free; CC required for verification, but the small VM this app uses fits inside Fly's monthly free credit).
+
+2. **Install the Fly CLI** on your Mac:
+   ```bash
+   brew install flyctl
+   ```
+
+3. **Log in:**
+   ```bash
+   fly auth login
+   ```
+
+4. **Edit `fly.toml`** — change the `app = "live-chat-aggregator"` line to a unique name (e.g. `dhmm-live-chat`, `flow-live-chat`). Names are global on Fly.
+
+5. **Launch the app** from this directory:
+   ```bash
+   cd ~/Claude/live-chat-aggregator
+   fly launch --copy-config --no-deploy
+   ```
+   When prompted: choose your closest region, say "no" to Postgres/Redis/Tigris.
+
+6. **Create the persistent volume** for `channels.json`:
+   ```bash
+   fly volumes create lca_data --size 1 --region iad
+   ```
+   (Use the same region you picked above. `iad` = US East. Other options: `lhr` London, `fra` Frankfurt, `sjc` San Jose, `gru` São Paulo.)
+
+7. **Set your admin token as a secret:**
+   ```bash
+   fly secrets set ADMIN_TOKEN=$(openssl rand -hex 16)
+   fly secrets list   # save the token shown — you'll use it in the admin URL
+   ```
+
+8. **Deploy:**
+   ```bash
+   fly deploy
+   ```
+
+   When it finishes, Fly prints your public URL — something like `https://dhmm-live-chat.fly.dev`. **Bookmark it.**
+
+### Each event after that
+
+You do nothing.
+
+- Public viewer URL: `https://your-app.fly.dev/`
+- Admin URL (only you): `https://your-app.fly.dev/admin.html?token=YOUR_ADMIN_TOKEN`
+
+When you go live on YouTube, the watcher detects it within ~60s and chat starts flowing on the public viewer URL.
+
+### Updating the app later
 
 ```bash
-# One-time setup — you do this once, ever:
-cloudflared tunnel login                       # opens browser, you log into Cloudflare
-cloudflared tunnel create live-chat            # creates a named tunnel
-cloudflared tunnel route dns live-chat chat.yourdomain.com   # if you have a domain on CF
-# OR skip the dns step and use the auto-assigned *.cfargotunnel.com URL it printed
-
-# Each event — one command:
-cloudflared tunnel run --url http://localhost:3000 live-chat
+cd ~/Claude/live-chat-aggregator
+git pull   # if you've pulled changes from GitHub
+fly deploy
 ```
 
-After the one-time setup, `npm run tunnel` (configured to the quick mode in this repo) or your named-tunnel command will give you the same URL every time.
-
-### Step 3 — add YouTube URLs
-
-Open the admin link from terminal 1 in your browser. Paste a YouTube live URL, click **Add**. Repeat for as many streams as you want. The viewer page will start showing chat in real time.
-
-To swap streams between events: open admin, click **Remove** on the old ones, paste new ones. No restart needed.
+`channels.json` survives deploys (it's on the volume).
 
 ## Pages
 
 | Page | URL | Who sees it |
 |------|-----|-------------|
-| Viewer | `/` | Anyone with the public Cloudflare URL — show this on stream, in OBS browser source, etc. |
-| Admin | `/admin.html?token=YOUR_TOKEN` | You only. The token is required. |
+| Viewer | `/` | Anyone with the URL — show this in OBS browser source, or share with team |
+| Admin | `/admin.html?token=YOUR_TOKEN` | You only |
 
-## OBS browser source
+## Admin page sections
 
-Add a Browser Source pointing at your public Cloudflare URL with width 480, height 720 (or whatever fits your overlay). It's transparent-friendly if you customize the CSS background to `transparent` for that use.
+**Add a YouTube channel** — primary feature. Paste channel URL or `@handle`, click Add. Channel starts in "watching" mode immediately.
+
+**Watching** — list of all channels with their current status:
+- `live` — channel is live right now, chat is flowing
+- `watching` — channel is being polled, not currently live
+- `error` — last poll failed (network blip, etc.) — auto-retries
+- `stopped` — paused via the Pause button
+
+**Direct video URL (advanced, collapsed)** — for one-off events when you want to monitor a specific live URL without permanently watching the channel. Doesn't persist across server restarts.
 
 ## Environment variables
 
-- `PORT` — default `3000`
-- `ADMIN_TOKEN` — required for the admin page. **Set this to something random.** If you leave it as the default `change-me`, the server prints a warning.
+| Var | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP port |
+| `ADMIN_TOKEN` | `change-me` | **Required.** Token for admin endpoints. Set this. |
+| `DATA_DIR` | `./data` (local) / `/data` (Docker) | Where `channels.json` lives |
 
-Example:
+## OBS browser source
 
-```bash
-PORT=3000 ADMIN_TOKEN=$(openssl rand -hex 16) npm start
-```
-
-## How the YouTube scraping works
-
-Uses [`masterchat`](https://www.npmjs.com/package/masterchat) which calls YouTube's internal live-chat continuation endpoint — the same one the official live-chat iframe uses. No API key, no quota, but:
-
-- It's an unofficial endpoint. YouTube can change it. If chat stops working, `npm update masterchat` usually fixes it.
-- If a stream goes offline mid-event, the source auto-reconnects with exponential backoff (capped at 30s) so reconnecting after a brief glitch is automatic.
-
-## Roadmap (not built yet)
-
-- Facebook Live comments — requires the Graph API (Page admin token + app review). Not feasible without official API.
-- TikTok Live — possible via `tiktok-live-connector`, deferred for v2.
-- Custom CSS / per-event branding.
-- Server-side message persistence across restarts.
+Add a Browser Source pointing at your public viewer URL. Suggested width 480, height 720.
 
 ## Troubleshooting
 
-**Admin page says "unauthorized"** — your URL is missing `?token=...` or the token doesn't match `ADMIN_TOKEN` in terminal 1.
+**"Admin says unauthorized"** — your URL is missing `?token=...` or the token doesn't match `ADMIN_TOKEN`.
 
-**Source stuck on "connecting" or "reconnecting"** — the YouTube URL might not be a live stream, or the stream just ended. Check the URL opens to a live broadcast in your own browser.
+**Channel stuck on "error" status** — usually a transient network/redirect quirk on YouTube's end; the watcher auto-retries every 60s. Click "Check now" to force an immediate retry.
 
-**Cloudflare URL works locally but not for others** — make sure terminal 1 (the app) is still running. If the app process died, the tunnel will return a 502.
+**Chat shows live but viewer is empty** — masterchat occasionally takes a few seconds to receive the first message after connecting; wait 10-20s.
+
+**Fly.io deploy says "billing not set up"** — you need to add a payment method (CC) at https://fly.io/dashboard/personal/billing — Fly verifies identity but won't charge if usage stays under the monthly free credit (~$5).
+
+## Roadmap
+
+- Facebook Live (requires Graph API; deferred until Page admin token + app review)
+- TikTok Live (via tiktok-live-connector)
+- Per-channel custom name override (already in API, UI button later)
+- Optional transparent background mode for OBS overlays

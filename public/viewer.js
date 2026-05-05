@@ -15,16 +15,11 @@ autoscrollBtn.addEventListener("click", () => {
   if (autoscroll) scrollToBottom();
 });
 
-// Disable autoscroll if the user scrolls up manually.
-chatEl.addEventListener("scroll", () => {
-  const nearBottom =
-    chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 60;
-  if (!nearBottom && autoscroll) {
-    autoscroll = false;
-    autoscrollBtn.classList.remove("on");
-    autoscrollBtn.textContent = "Auto-scroll: OFF";
-  }
-});
+// Note: deliberately NOT auto-disabling on user scroll. The previous version
+// did this but the smooth-scroll animation triggered scroll events that the
+// handler misread as "user scrolled up" and switched itself off after the
+// first message. Auto-scroll is on by default and stays on until the user
+// explicitly clicks the toggle.
 
 function scrollToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;

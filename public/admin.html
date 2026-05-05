@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/viewer.css" />
     <style>
       .admin {
-        max-width: 720px;
+        max-width: 760px;
         margin: 24px auto;
         padding: 0 16px;
       }
@@ -19,11 +19,16 @@
         margin-bottom: 16px;
       }
       .card h2 {
-        margin: 0 0 12px;
+        margin: 0 0 4px;
         font-size: 14px;
         text-transform: uppercase;
         letter-spacing: 0.6px;
         color: var(--text-dim);
+      }
+      .card .help {
+        color: var(--text-dim);
+        font-size: 13px;
+        margin: 0 0 12px;
       }
       .row {
         display: flex;
@@ -55,6 +60,19 @@
       button.primary:hover {
         filter: brightness(1.1);
       }
+      button.ghost {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 6px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+      }
+      button.ghost:hover {
+        border-color: rgba(255, 255, 255, 0.2);
+      }
       button.danger {
         background: transparent;
         color: #ef5350;
@@ -68,28 +86,37 @@
       button.danger:hover {
         background: rgba(239, 83, 80, 0.1);
       }
-      .source-row {
+      .source-row,
+      .channel-row {
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 10px 0;
+        padding: 12px 0;
         border-top: 1px solid var(--border);
       }
-      .source-row:first-child {
+      .source-row:first-child,
+      .channel-row:first-child {
         border-top: 0;
       }
-      .source-row .info {
+      .source-row .info,
+      .channel-row .info {
         flex: 1;
         min-width: 0;
       }
-      .source-row .info .url {
-        font-size: 13px;
+      .info .url {
+        font-size: 12px;
         color: var(--text-dim);
         word-break: break-all;
       }
-      .source-row .info .title {
+      .info .title {
         font-size: 14px;
         margin-bottom: 2px;
+        font-weight: 500;
+      }
+      .info .meta {
+        font-size: 12px;
+        color: var(--text-dim);
+        margin-top: 4px;
       }
       .pill {
         font-size: 11px;
@@ -101,9 +128,10 @@
         letter-spacing: 0.4px;
       }
       .pill.live {
-        background: rgba(46, 204, 113, 0.15);
+        background: rgba(46, 204, 113, 0.18);
         color: #2ecc71;
       }
+      .pill.watching,
       .pill.connecting,
       .pill.reconnecting {
         background: rgba(240, 196, 25, 0.15);
@@ -114,17 +142,21 @@
         background: rgba(239, 83, 80, 0.15);
         color: #ef5350;
       }
+      .pill.live::before {
+        content: "● ";
+      }
       .empty-list {
         color: var(--text-dim);
         font-size: 13px;
         text-align: center;
-        padding: 12px 0;
+        padding: 16px 0;
       }
       .toolbar {
         display: flex;
-        gap: 8px;
+        gap: 12px;
         align-items: center;
-        margin-top: 8px;
+        margin-top: 12px;
+        flex-wrap: wrap;
       }
       .toolbar a {
         color: var(--accent);
@@ -139,6 +171,35 @@
         font-size: 13px;
         margin-top: 8px;
       }
+      details.legacy {
+        background: var(--bg-bubble);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0 16px;
+      }
+      details.legacy summary {
+        cursor: pointer;
+        padding: 16px 0;
+        font-size: 13px;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        list-style: none;
+      }
+      details.legacy summary::after {
+        content: " ▾";
+      }
+      details.legacy[open] summary::after {
+        content: " ▴";
+      }
+      details.legacy .legacy-body {
+        padding-bottom: 16px;
+      }
+      .actions {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
     </style>
   </head>
   <body>
@@ -149,28 +210,55 @@
       </header>
 
       <div class="card">
-        <h2>Add YouTube live URL</h2>
-        <form id="add-form" class="row" autocomplete="off">
+        <h2>Add a YouTube channel</h2>
+        <p class="help">
+          Paste a channel URL or @handle. The system will watch it forever and
+          auto-pull chat whenever the channel goes live. You only do this once
+          per channel.
+        </p>
+        <form id="add-channel-form" class="row" autocomplete="off">
           <input
-            id="url"
+            id="channel-url"
             type="text"
-            placeholder="https://www.youtube.com/watch?v=..."
+            placeholder="@flowchurch  or  https://www.youtube.com/@flowchurch"
             required
           />
-          <button class="primary" type="submit">Add</button>
+          <button class="primary" type="submit">Add &amp; Start watching</button>
         </form>
         <div id="add-err" class="err" hidden></div>
         <div class="toolbar">
-          <a href="/" target="_blank">Open viewer ↗</a>
+          <a href="/" target="_blank">Open public viewer ↗</a>
           <span style="color: var(--text-dim); font-size: 13px">·</span>
-          <button id="clear" class="danger">Clear chat history</button>
+          <button id="clear" class="ghost">Clear chat history</button>
         </div>
       </div>
 
       <div class="card">
-        <h2>Active sources</h2>
-        <div id="sources"></div>
+        <h2>Watching</h2>
+        <div id="channels"></div>
       </div>
+
+      <details class="legacy">
+        <summary>Direct video URL (one-off, advanced)</summary>
+        <div class="legacy-body">
+          <p class="help">
+            For a one-time event where you don't want to permanently watch a
+            channel — paste a specific live <code>watch?v=…</code> URL. It
+            won't persist across server restarts.
+          </p>
+          <form id="add-source-form" class="row" autocomplete="off">
+            <input
+              id="source-url"
+              type="text"
+              placeholder="https://www.youtube.com/watch?v=..."
+              required
+            />
+            <button class="primary" type="submit">Add</button>
+          </form>
+          <div id="src-err" class="err" hidden></div>
+          <div id="sources" style="margin-top: 12px"></div>
+        </div>
+      </details>
     </div>
 
     <script>
@@ -180,7 +268,11 @@
 
       async function api(path, opts = {}) {
         const headers = { "x-admin-token": TOKEN, ...(opts.headers || {}) };
-        if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
+        if (
+          opts.body &&
+          typeof opts.body === "object" &&
+          !(opts.body instanceof FormData)
+        ) {
           headers["Content-Type"] = "application/json";
           opts.body = JSON.stringify(opts.body);
         }
@@ -190,18 +282,98 @@
         return j;
       }
 
-      function statusPillClass(s) {
-        return s || "unknown";
+      function pill(status) {
+        return `<span class="pill ${status}">${status}</span>`;
       }
 
-      function renderSources(sources) {
-        const root = $("sources");
-        if (!sources || sources.length === 0) {
-          root.innerHTML = `<div class="empty-list">No sources yet. Paste a YouTube live URL above.</div>`;
+      function fmtTime(iso) {
+        if (!iso) return "—";
+        try {
+          return new Date(iso).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+        } catch {
+          return iso;
+        }
+      }
+
+      function renderChannels(list) {
+        const root = $("channels");
+        if (!list || list.length === 0) {
+          root.innerHTML = `<div class="empty-list">No channels yet. Paste one above.</div>`;
           return;
         }
         root.innerHTML = "";
-        for (const s of sources) {
+        for (const c of list) {
+          const row = document.createElement("div");
+          row.className = "channel-row";
+          const isLive = c.status === "live";
+          const titleText =
+            c.name ||
+            (isLive && c.currentTitle ? c.currentTitle : c.input);
+          row.innerHTML = `
+            <div class="info">
+              <div class="title"></div>
+              <div class="url"></div>
+              <div class="meta">
+                last checked: ${fmtTime(c.lastCheckedAt)}${
+            c.lastError ? ` · <span style="color:#ef5350">${escapeHtml(c.lastError)}</span>` : ""
+          }${
+            isLive && c.currentVideoId
+              ? ` · <a href="https://www.youtube.com/watch?v=${c.currentVideoId}" target="_blank" style="color:var(--accent);text-decoration:none">live video ↗</a>`
+              : ""
+          }
+              </div>
+            </div>
+            ${pill(c.status)}
+            <div class="actions">
+              ${
+                c.enabled
+                  ? `<button class="ghost" data-act="stop">Pause</button>`
+                  : `<button class="ghost" data-act="start">Start</button>`
+              }
+              <button class="ghost" data-act="poll">Check now</button>
+              <button class="danger" data-act="remove">Remove</button>
+            </div>
+          `;
+          row.querySelector(".title").textContent = titleText;
+          row.querySelector(".url").textContent = c.canonical || c.input;
+          row.querySelectorAll("button[data-act]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              btn.disabled = true;
+              try {
+                const act = btn.dataset.act;
+                if (act === "start") await api(`/api/channels/${c.id}/start`, { method: "POST" });
+                else if (act === "stop") await api(`/api/channels/${c.id}/stop`, { method: "POST" });
+                else if (act === "poll") await api(`/api/channels/${c.id}/poll`, { method: "POST" });
+                else if (act === "remove") {
+                  if (!confirm(`Remove "${titleText}"?`)) {
+                    btn.disabled = false;
+                    return;
+                  }
+                  await api(`/api/channels/${c.id}`, { method: "DELETE" });
+                }
+                await refresh();
+              } catch (e) {
+                alert(e.message);
+                btn.disabled = false;
+              }
+            });
+          });
+          root.appendChild(row);
+        }
+      }
+
+      function renderSources(list) {
+        const root = $("sources");
+        if (!list || list.length === 0) {
+          root.innerHTML = `<div class="empty-list">No direct sources.</div>`;
+          return;
+        }
+        root.innerHTML = "";
+        for (const s of list) {
           const row = document.createElement("div");
           row.className = "source-row";
           row.innerHTML = `
@@ -209,20 +381,16 @@
               <div class="title"></div>
               <div class="url"></div>
             </div>
-            <span class="pill ${statusPillClass(s.status)}">${s.status}</span>
+            ${pill(s.status)}
             <button class="danger" data-url="">Remove</button>
           `;
           row.querySelector(".title").textContent = s.title || s.videoId || "(loading…)";
           row.querySelector(".url").textContent = s.input;
           const btn = row.querySelector("button.danger");
-          btn.dataset.url = s.input;
           btn.addEventListener("click", async () => {
             btn.disabled = true;
             try {
-              await api("/api/sources", {
-                method: "DELETE",
-                body: { url: s.input },
-              });
+              await api("/api/sources", { method: "DELETE", body: { url: s.input } });
               await refresh();
             } catch (e) {
               alert(e.message);
@@ -233,11 +401,22 @@
         }
       }
 
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+        );
+      }
+
       async function refresh() {
         try {
-          const j = await api("/api/sources");
-          renderSources(j.sources);
+          const [chRes, srcRes] = await Promise.all([
+            api("/api/channels"),
+            api("/api/sources"),
+          ]);
+          renderChannels(chRes.channels);
+          renderSources(srcRes.sources);
           $("conn").textContent = "connected";
+          $("conn").classList.remove("offline");
           $("conn").classList.add("live");
         } catch (e) {
           $("conn").textContent = e.message;
@@ -246,18 +425,33 @@
         }
       }
 
-      $("add-form").addEventListener("submit", async (e) => {
+      $("add-channel-form").addEventListener("submit", async (e) => {
         e.preventDefault();
-        const url = $("url").value.trim();
+        const url = $("channel-url").value.trim();
         if (!url) return;
         $("add-err").hidden = true;
         try {
-          await api("/api/sources", { method: "POST", body: { url } });
-          $("url").value = "";
+          await api("/api/channels", { method: "POST", body: { url, autostart: true } });
+          $("channel-url").value = "";
           await refresh();
         } catch (err) {
           $("add-err").textContent = err.message;
           $("add-err").hidden = false;
+        }
+      });
+
+      $("add-source-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const url = $("source-url").value.trim();
+        if (!url) return;
+        $("src-err").hidden = true;
+        try {
+          await api("/api/sources", { method: "POST", body: { url } });
+          $("source-url").value = "";
+          await refresh();
+        } catch (err) {
+          $("src-err").textContent = err.message;
+          $("src-err").hidden = false;
         }
       });
 
@@ -270,18 +464,25 @@
         }
       });
 
-      // Live updates: a WebSocket on the same page so admin sees status changes.
+      // Live updates
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${proto}//${location.host}/ws`);
       ws.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);
-          if (d.type === "init" || d.type === "status" || d.type === "removed")
+          if (
+            d.type === "init" ||
+            d.type === "channel_status" ||
+            d.type === "channel_removed" ||
+            d.type === "source_status" ||
+            d.type === "source_removed"
+          ) {
             refresh();
+          }
         } catch {}
       };
       ws.onclose = () => {
-        $("conn").textContent = "disconnected";
+        $("conn").textContent = "disconnected — refresh page";
         $("conn").classList.remove("live");
         $("conn").classList.add("offline");
       };
