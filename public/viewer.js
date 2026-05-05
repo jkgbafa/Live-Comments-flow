@@ -40,9 +40,8 @@ function renderMessage(msg) {
 
   const el = document.createElement("div");
   el.className = "msg";
-  if (msg.isOwner) el.classList.add("owner");
-  else if (msg.isModerator) el.classList.add("moderator");
-  else if (msg.membership) el.classList.add("member");
+  // Deliberately NOT exposing isOwner / isModerator / membership in the UI —
+  // we don't want to out moderators to the public chat audience.
 
   const avatarHtml = msg.avatar
     ? `<img class="avatar" src="${msg.avatar}" alt="" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">`
@@ -53,11 +52,6 @@ function renderMessage(msg) {
   // same icon mapping.
   const platform = msg.platform || msg.source || "";
   const sourceIcon = SOURCE_ICONS[platform] || "";
-
-  let roleBadge = "";
-  if (msg.isOwner) roleBadge = `<span class="badge role">Owner</span>`;
-  else if (msg.isModerator) roleBadge = `<span class="badge role">Mod</span>`;
-  else if (msg.membership) roleBadge = `<span class="badge role">Member</span>`;
 
   // Channel/page subtext shown next to the platform icon, e.g.
   // "Dag Heward-Mills" or "Flow Church". For direct sources without a
@@ -75,7 +69,6 @@ function renderMessage(msg) {
             ? `<span class="channel-tag"></span>`
             : ""
         }
-        ${roleBadge}
         <span class="time">${fmtTime(msg.timestamp)}</span>
       </div>
       <div class="text"></div>
