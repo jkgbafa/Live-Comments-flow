@@ -46,11 +46,33 @@ body {
   border-bottom: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.2);
   flex: 0 0 auto;
+  gap: 12px;
 }
 
 .topbar .title {
   font-weight: 600;
   letter-spacing: 0.2px;
+}
+
+.topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.topbar .brand-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.topbar .brand-logo {
+  height: 22px;
+  width: auto;
+  display: block;
+  opacity: 0.95;
 }
 
 .status {

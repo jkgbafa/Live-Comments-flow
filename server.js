@@ -14,10 +14,19 @@ const { WebSocketServer } = require("ws");
 const { YouTubeSource } = require("./lib/youtube-source");
 const { ChannelWatcher } = require("./lib/channel-watcher");
 const { loadChannels, saveChannels } = require("./lib/store");
+const {
+  Scheduler,
+  DEFAULT_WINDOWS,
+  describeWindow,
+} = require("./lib/scheduler");
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "change-me";
 const MAX_BUFFER = 200;
+// Cookie session lifetime. Browsers cap real persistence at ~400 days, but
+// we set far higher AND refresh the cookie on every authenticated request
+// (rolling session) so the user effectively stays logged in forever.
+const COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 365 * 10; // 10 years (browser caps)
 
 const app = express();
 app.use(express.json());
@@ -67,6 +76,25 @@ function getAdminToken(req) {
 const channels = new Map(); // id -> ChannelWatcher
 const directSources = new Map(); // input -> YouTubeSource (legacy direct video URLs)
 const recent = []; // ring buffer of recent messages
+
+// Scheduler — fires extra polls during configured windows. Default schedule
+// covers the broadcast slots (see lib/scheduler.js for details).
+const scheduler = new Scheduler();
+scheduler.setWindows(DEFAULT_WINDOWS);
+scheduler.on("tick", (window) => {
+  // During a scheduled window, poll every enabled channel right away.
+  for (const ch of channels.values()) {
+    if (ch.enabled) ch.pollNow().catch(() => {});
+  }
+  broadcast({ type: "scheduled_tick", window });
+});
+scheduler.on("window_start", (window) => {
+  console.log(`[scheduler] window started: ${describeWindow(window)}`);
+  broadcast({ type: "window_start", window });
+});
+scheduler.on("window_end", () => {
+  broadcast({ type: "window_end" });
+});
 
 // --- helpers ---
 function rememberMessage(msg) {
@@ -121,6 +149,7 @@ async function persistChannels() {
 function requireAdmin(req, res, next) {
   const token = getAdminToken(req);
   if (token !== ADMIN_TOKEN) return res.status(401).json({ error: "unauthorized" });
+  refreshSessionCookie(req, res);
   next();
 }
 
@@ -140,11 +169,28 @@ app.post("/api/admin/login", (req, res) => {
     httpOnly: true,
     secure: onHttps,
     sameSite: "strict",
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    maxAge: COOKIE_MAX_AGE,
     path: "/",
   });
   res.json({ ok: true });
 });
+
+// Rolling session: any authenticated request refreshes the cookie. Combined
+// with the long maxAge, this means the user stays logged in indefinitely
+// as long as they touch the admin at least once a year.
+function refreshSessionCookie(req, res) {
+  const token = parseCookies(req.headers.cookie || "").lca_admin;
+  if (token !== ADMIN_TOKEN) return;
+  const onHttps =
+    req.protocol === "https" || req.header("x-forwarded-proto") === "https";
+  res.cookie("lca_admin", ADMIN_TOKEN, {
+    httpOnly: true,
+    secure: onHttps,
+    sameSite: "strict",
+    maxAge: COOKIE_MAX_AGE,
+    path: "/",
+  });
+}
 
 app.post("/api/admin/logout", (_req, res) => {
   res.clearCookie("lca_admin", { path: "/" });
@@ -163,13 +209,18 @@ app.get("/api/channels", requireAdmin, (_req, res) => {
 });
 
 app.post("/api/channels", requireAdmin, async (req, res) => {
-  const { url, name, autostart } = req.body || {};
+  const { url, name, platform, autostart } = req.body || {};
   if (!url || typeof url !== "string") {
     return res.status(400).json({ error: "missing url" });
   }
   let ch;
   try {
-    ch = new ChannelWatcher({ input: url, name: name || null, enabled: false });
+    ch = new ChannelWatcher({
+      input: url,
+      name: name || null,
+      platform: platform || "youtube",
+      enabled: false,
+    });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -181,6 +232,9 @@ app.post("/api/channels", requireAdmin, async (req, res) => {
   }
   channels.set(ch.id, ch);
   attachChannel(ch);
+  // Kick off a metadata fetch right away so the admin sees a real name
+  // instead of just the URL.
+  ch._ensureMetadata().catch(() => {});
   if (autostart !== false) ch.start();
   await persistChannels();
   res.json({ channel: ch.snapshot() });
@@ -262,12 +316,49 @@ app.post("/api/clear-recent", requireAdmin, (_req, res) => {
   res.json({ ok: true });
 });
 
+// --- Schedule API ---
+app.get("/api/schedule", requireAdmin, (_req, res) => {
+  res.json({
+    windows: scheduler.windows.map((w) => ({ ...w, label: describeWindow(w) })),
+    nextRun: scheduler.nextRun(),
+    currentlyInWindow: scheduler.currentWindow() || null,
+  });
+});
+
+app.put("/api/schedule", requireAdmin, (req, res) => {
+  const { windows } = req.body || {};
+  if (!Array.isArray(windows)) {
+    return res.status(400).json({ error: "windows must be an array" });
+  }
+  for (const w of windows) {
+    if (
+      typeof w.day !== "number" ||
+      w.day < 0 ||
+      w.day > 6 ||
+      typeof w.startMinute !== "number" ||
+      typeof w.endMinute !== "number" ||
+      w.startMinute < 0 ||
+      w.endMinute > 1439 ||
+      w.startMinute > w.endMinute
+    ) {
+      return res.status(400).json({ error: "invalid window: " + JSON.stringify(w) });
+    }
+  }
+  scheduler.setWindows(windows);
+  res.json({ windows: scheduler.windows, nextRun: scheduler.nextRun() });
+});
+
 // --- Public state (read-only, used by viewer) ---
 app.get("/api/state", (_req, res) => {
   res.json({
     channels: listChannels(),
     sources: listDirectSources(),
     recent,
+    schedule: {
+      windows: scheduler.windows.map((w) => ({ ...w, label: describeWindow(w) })),
+      nextRun: scheduler.nextRun(),
+      currentlyInWindow: scheduler.currentWindow() || null,
+    },
   });
 });
 
@@ -295,11 +386,15 @@ async function startup() {
         id: entry.id,
         input: entry.input,
         name: entry.name,
+        displayName: entry.displayName,
+        platform: entry.platform || "youtube",
         enabled: !!entry.enabled,
         pollIntervalMs: entry.pollIntervalMs,
       });
       channels.set(ch.id, ch);
       attachChannel(ch);
+      // Refresh display name in the background — channel names can change.
+      ch._ensureMetadata().catch(() => {});
       if (entry.enabled) ch.start();
     } catch (err) {
       console.warn(
@@ -308,6 +403,14 @@ async function startup() {
     }
   }
   console.log(`[server] loaded ${channels.size} persisted channel(s)`);
+  scheduler.start();
+  console.log(
+    `[server] scheduler started — windows: ${scheduler.windows
+      .map(describeWindow)
+      .join(", ")}`
+  );
+  const next = scheduler.nextRun();
+  if (next) console.log(`[server] next scheduled run: ${next.at.toISOString()}`);
 }
 
 server.listen(PORT, async () => {

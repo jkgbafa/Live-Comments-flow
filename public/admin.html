@@ -200,6 +200,24 @@
         gap: 6px;
         align-items: center;
       }
+      .platform-section {
+        margin-top: 12px;
+      }
+      .platform-section:first-child {
+        margin-top: 0;
+      }
+      .platform-heading {
+        margin: 0 0 4px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        color: var(--accent);
+        padding: 8px 0 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      .platform-section:first-child .platform-heading {
+        padding-top: 0;
+      }
       .login-screen {
         max-width: 400px;
         margin: 80px auto;
@@ -208,6 +226,13 @@
         border: 1px solid var(--border);
         border-radius: 12px;
         text-align: center;
+      }
+      .login-screen .login-logo {
+        display: block;
+        margin: 0 auto 18px;
+        height: 44px;
+        width: auto;
+        opacity: 0.98;
       }
       .login-screen h1 {
         margin: 0 0 4px;
@@ -261,6 +286,7 @@
   <body>
     <!-- Login screen, shown when not authenticated. -->
     <div id="login-view" class="login-screen" hidden>
+      <img src="/flow-logo.png" alt="Flow" class="login-logo" />
       <h1>Live Chat · Admin</h1>
       <p>Enter the admin password to manage channels.</p>
       <form id="login-form">
@@ -279,8 +305,14 @@
     <!-- Admin view, shown when authenticated. -->
     <div id="admin-view" class="admin" hidden>
       <header class="topbar" style="border-radius: 10px; margin-bottom: 16px">
-        <div class="title">Live Chat · Admin</div>
-        <div class="status" id="conn">connecting…<button id="logout" class="logout-btn" type="button">Sign out</button></div>
+        <div class="brand">
+          <span class="title">Live Chat · Admin</span>
+        </div>
+        <div class="brand-right">
+          <span class="status" id="conn">connecting…</span>
+          <button id="logout" class="logout-btn" type="button">Sign out</button>
+          <img src="/flow-logo.png" alt="Flow" class="brand-logo" />
+        </div>
       </header>
 
       <div class="card">
@@ -308,8 +340,13 @@
       </div>
 
       <div class="card">
+        <h2>Schedule</h2>
+        <p class="help" id="schedule-help">Loading…</p>
+      </div>
+
+      <div class="card">
         <h2>Watching</h2>
-        <div id="channels"></div>
+        <div id="platforms"></div>
       </div>
 
       <details class="legacy">
@@ -427,71 +464,119 @@
         }
       }
 
+      const PLATFORM_LABELS = {
+        youtube: "YouTube",
+        facebook: "Facebook",
+        tiktok: "TikTok",
+      };
+
       function renderChannels(list) {
-        const root = $("channels");
+        const root = $("platforms");
         if (!list || list.length === 0) {
           root.innerHTML = `<div class="empty-list">No channels yet. Paste one above.</div>`;
           return;
         }
-        root.innerHTML = "";
+        // Group by platform.
+        const groups = new Map();
         for (const c of list) {
-          const row = document.createElement("div");
-          row.className = "channel-row";
-          const isLive = c.status === "live";
-          const titleText =
-            c.name ||
-            (isLive && c.currentTitle ? c.currentTitle : c.input);
-          row.innerHTML = `
-            <div class="info">
-              <div class="title"></div>
-              <div class="url"></div>
-              <div class="meta">
-                last checked: ${fmtTime(c.lastCheckedAt)}${
-            c.lastError ? ` · <span style="color:#ef5350">${escapeHtml(c.lastError)}</span>` : ""
-          }${
-            isLive && c.currentVideoId
-              ? ` · <a href="https://www.youtube.com/watch?v=${c.currentVideoId}" target="_blank" style="color:var(--accent);text-decoration:none">live video ↗</a>`
-              : ""
-          }
-              </div>
-            </div>
-            ${pill(c.status)}
-            <div class="actions">
-              ${
-                c.enabled
-                  ? `<button class="ghost" data-act="stop">Pause</button>`
-                  : `<button class="ghost" data-act="start">Start</button>`
-              }
-              <button class="ghost" data-act="poll">Check now</button>
-              <button class="danger" data-act="remove">Remove</button>
-            </div>
-          `;
-          row.querySelector(".title").textContent = titleText;
-          row.querySelector(".url").textContent = c.canonical || c.input;
-          row.querySelectorAll("button[data-act]").forEach((btn) => {
-            btn.addEventListener("click", async () => {
-              btn.disabled = true;
-              try {
-                const act = btn.dataset.act;
-                if (act === "start") await api(`/api/channels/${c.id}/start`, { method: "POST" });
-                else if (act === "stop") await api(`/api/channels/${c.id}/stop`, { method: "POST" });
-                else if (act === "poll") await api(`/api/channels/${c.id}/poll`, { method: "POST" });
-                else if (act === "remove") {
-                  if (!confirm(`Remove "${titleText}"?`)) {
-                    btn.disabled = false;
-                    return;
-                  }
-                  await api(`/api/channels/${c.id}`, { method: "DELETE" });
-                }
-                await refresh();
-              } catch (e) {
-                alert(e.message);
-                btn.disabled = false;
-              }
-            });
-          });
-          root.appendChild(row);
+          const key = c.platform || "youtube";
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(c);
         }
+        root.innerHTML = "";
+        for (const [platform, items] of groups) {
+          const section = document.createElement("div");
+          section.className = "platform-section";
+          const heading = document.createElement("h3");
+          heading.className = "platform-heading";
+          heading.textContent = PLATFORM_LABELS[platform] || platform;
+          section.appendChild(heading);
+          for (const c of items) {
+            section.appendChild(renderChannelRow(c));
+          }
+          root.appendChild(section);
+        }
+      }
+
+      function renderChannelRow(c) {
+        const row = document.createElement("div");
+        row.className = "channel-row";
+        const isLive = c.status === "live";
+        const friendlyName = c.name || c.displayName || c.canonical;
+        const labelText = c.label || `${c.platform} - ${friendlyName}`;
+        row.innerHTML = `
+          <div class="info">
+            <div class="title"></div>
+            <div class="url"></div>
+            <div class="meta">
+              last checked: ${fmtTime(c.lastCheckedAt)}${
+          c.lastError ? ` · <span style="color:#ef5350">${escapeHtml(c.lastError)}</span>` : ""
+        }${
+          isLive && c.currentVideoId
+            ? ` · <a href="https://www.youtube.com/watch?v=${c.currentVideoId}" target="_blank" style="color:var(--accent);text-decoration:none">live video ↗</a>`
+            : ""
+        }
+            </div>
+          </div>
+          ${pill(c.status)}
+          <div class="actions">
+            ${
+              c.enabled
+                ? `<button class="ghost" data-act="stop">Pause</button>`
+                : `<button class="ghost" data-act="start">Start</button>`
+            }
+            <button class="ghost" data-act="poll">Check now</button>
+            <button class="danger" data-act="remove">Remove</button>
+          </div>
+        `;
+        row.querySelector(".title").textContent = labelText;
+        row.querySelector(".url").textContent = c.canonical || c.input;
+        row.querySelectorAll("button[data-act]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            try {
+              const act = btn.dataset.act;
+              if (act === "start") await api(`/api/channels/${c.id}/start`, { method: "POST" });
+              else if (act === "stop") await api(`/api/channels/${c.id}/stop`, { method: "POST" });
+              else if (act === "poll") await api(`/api/channels/${c.id}/poll`, { method: "POST" });
+              else if (act === "remove") {
+                if (!confirm(`Remove "${labelText}"?`)) {
+                  btn.disabled = false;
+                  return;
+                }
+                await api(`/api/channels/${c.id}`, { method: "DELETE" });
+              }
+              await refresh();
+            } catch (e) {
+              alert(e.message);
+              btn.disabled = false;
+            }
+          });
+        });
+        return row;
+      }
+
+      function renderSchedule(schedule) {
+        const help = $("schedule-help");
+        if (!schedule || !schedule.windows || schedule.windows.length === 0) {
+          help.textContent = "No schedule configured.";
+          return;
+        }
+        const lines = schedule.windows.map((w) => `· ${w.label}`);
+        let str = "Auto-checking on:\n" + lines.join("\n");
+        if (schedule.currentlyInWindow) {
+          str += "\n\n🟢 Currently in a scheduled window — polling every minute.";
+        } else if (schedule.nextRun) {
+          const at = new Date(schedule.nextRun.at);
+          str += `\n\nNext run: ${at.toLocaleString([], {
+            weekday: "long",
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZoneName: "short",
+          })}`;
+        }
+        help.style.whiteSpace = "pre-line";
+        help.textContent = str;
       }
 
       function renderSources(list) {
@@ -537,12 +622,14 @@
 
       async function refresh() {
         try {
-          const [chRes, srcRes] = await Promise.all([
+          const [chRes, srcRes, schedRes] = await Promise.all([
             api("/api/channels"),
             api("/api/sources"),
+            api("/api/schedule"),
           ]);
           renderChannels(chRes.channels);
           renderSources(srcRes.sources);
+          renderSchedule(schedRes);
           $("conn").textContent = "connected";
           $("conn").classList.remove("offline");
           $("conn").classList.add("live");
