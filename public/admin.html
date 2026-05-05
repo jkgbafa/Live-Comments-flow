@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Admin · Live Chat</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="alternate icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
     <link rel="stylesheet" href="/viewer.css" />
     <style>
       .admin {
@@ -524,21 +527,41 @@
         tiktok: "TIKTOK",
       };
 
-      function renderChannels(list) {
+      function renderChannels(channels, fbPages) {
         const root = $("platforms");
-        if (!list || list.length === 0) {
+        const ytItems = (channels || []).map((c) => ({
+          ...c,
+          platform: c.platform || "youtube",
+        }));
+        const fbItems = (fbPages || []).map((p) => ({
+          ...p,
+          platform: "facebook",
+          // Normalize fields so renderRow handles both shapes
+          id: p.pageId,
+          canonical: `facebook.com/${p.pageId}`,
+          displayName: p.pageName,
+          name: p.pageName,
+          enabled: true,
+          isFb: true,
+        }));
+        if (ytItems.length === 0 && fbItems.length === 0) {
           root.innerHTML = `<div class="empty-list">No channels yet. Paste one above.</div>`;
           return;
         }
         // Group by platform.
         const groups = new Map();
-        for (const c of list) {
-          const key = c.platform || "youtube";
+        for (const c of [...ytItems, ...fbItems]) {
+          const key = c.platform;
           if (!groups.has(key)) groups.set(key, []);
           groups.get(key).push(c);
         }
         root.innerHTML = "";
-        for (const [platform, items] of groups) {
+        // Sort: YouTube first, then Facebook, then others
+        const order = ["youtube", "facebook", "tiktok"];
+        const sorted = Array.from(groups.entries()).sort(
+          (a, b) => order.indexOf(a[0]) - order.indexOf(b[0])
+        );
+        for (const [platform, items] of sorted) {
           const section = document.createElement("div");
           section.className = "platform-section";
           const heading = document.createElement("h3");
@@ -546,10 +569,52 @@
           heading.textContent = PLATFORM_LABELS[platform] || platform;
           section.appendChild(heading);
           for (const c of items) {
-            section.appendChild(renderChannelRow(c));
+            section.appendChild(c.isFb ? renderFbRow(c) : renderChannelRow(c));
           }
           root.appendChild(section);
         }
+      }
+
+      function renderFbRow(p) {
+        const row = document.createElement("div");
+        row.className = "channel-row";
+        const isLive = p.status === "live";
+        const labelText = `FACEBOOK - ${p.pageName}`;
+        row.innerHTML = `
+          <div class="info">
+            <div class="title"></div>
+            <div class="url">facebook.com/${p.pageId}</div>
+            <div class="meta">
+              last checked: ${fmtTime(p.lastCheckedAt)}${
+          p.lastError ? ` · <span style="color:#ef5350">${escapeHtml(p.lastError)}</span>` : ""
+        }${
+          isLive && p.videoId
+            ? ` · <a href="https://www.facebook.com/${p.pageId}/videos/${p.videoId}" target="_blank" style="color:var(--accent);text-decoration:none">live video ↗</a>`
+            : ""
+        }
+            </div>
+          </div>
+          ${pill(p.status)}
+          <div class="actions">
+            <button class="ghost" data-act="poll">Check now</button>
+          </div>
+        `;
+        row.querySelector(".title").textContent = labelText;
+        row.querySelectorAll("button[data-act]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            try {
+              if (btn.dataset.act === "poll") {
+                await api(`/api/fb-pages/${p.pageId}/poll`, { method: "POST" });
+              }
+              await refresh();
+            } catch (e) {
+              alert(e.message);
+              btn.disabled = false;
+            }
+          });
+        });
+        return row;
       }
 
       function renderChannelRow(c) {
@@ -672,10 +737,11 @@
         );
       }
 
-      function renderLiveBanner(channels, sources) {
+      function renderLiveBanner(channels, sources, fbPages) {
         const liveChannels = (channels || []).filter((c) => c.status === "live");
         const liveSources = (sources || []).filter((s) => s.status === "live");
-        const total = liveChannels.length + liveSources.length;
+        const liveFb = (fbPages || []).filter((p) => p.status === "live");
+        const total = liveChannels.length + liveSources.length + liveFb.length;
         const banner = $("live-banner");
         $("live-banner-num").textContent = total;
         $("live-banner-label").textContent =
@@ -686,13 +752,14 @@
 
       async function refresh() {
         try {
-          const [chRes, srcRes, schedRes] = await Promise.all([
+          const [chRes, srcRes, schedRes, fbRes] = await Promise.all([
             api("/api/channels"),
             api("/api/sources"),
             api("/api/schedule"),
+            api("/api/fb-pages").catch(() => ({ fbPages: [] })),
           ]);
-          renderLiveBanner(chRes.channels, srcRes.sources);
-          renderChannels(chRes.channels);
+          renderLiveBanner(chRes.channels, srcRes.sources, fbRes.fbPages);
+          renderChannels(chRes.channels, fbRes.fbPages);
           renderSources(srcRes.sources);
           renderSchedule(schedRes);
           $("conn").textContent = "connected";
@@ -764,7 +831,8 @@
               d.type === "channel_status" ||
               d.type === "channel_removed" ||
               d.type === "source_status" ||
-              d.type === "source_removed"
+              d.type === "source_removed" ||
+              d.type === "fb_status"
             ) {
               refresh();
             }

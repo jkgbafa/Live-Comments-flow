@@ -13,6 +13,7 @@ const express = require("express");
 const { WebSocketServer } = require("ws");
 const { YouTubeSource } = require("./lib/youtube-source");
 const { ChannelWatcher } = require("./lib/channel-watcher");
+const { FacebookSource } = require("./lib/facebook-source");
 const { loadChannels, saveChannels } = require("./lib/store");
 const {
   Scheduler,
@@ -73,8 +74,9 @@ function getAdminToken(req) {
 }
 
 // State
-const channels = new Map(); // id -> ChannelWatcher
+const channels = new Map(); // id -> ChannelWatcher (YouTube, channel-based)
 const directSources = new Map(); // input -> YouTubeSource (legacy direct video URLs)
+const fbPages = new Map(); // pageId -> FacebookSource
 const recent = []; // ring buffer of recent messages
 
 // Scheduler — fires extra polls during configured windows. Default schedule
@@ -129,6 +131,20 @@ function attachDirectSource(src) {
   src.on("status", (snap) => {
     broadcast({ type: "source_status", source: snap });
   });
+}
+
+function attachFbPage(src) {
+  src.on("message", (msg) => {
+    rememberMessage(msg);
+    broadcast({ type: "message", message: msg });
+  });
+  src.on("status", (snap) => {
+    broadcast({ type: "fb_status", source: snap });
+  });
+}
+
+function listFbPages() {
+  return Array.from(fbPages.values()).map((s) => s.snapshot());
 }
 
 function listChannels() {
@@ -353,6 +369,7 @@ app.get("/api/state", (_req, res) => {
   res.json({
     channels: listChannels(),
     sources: listDirectSources(),
+    fbPages: listFbPages(),
     recent,
     schedule: {
       windows: scheduler.windows.map((w) => ({ ...w, label: describeWindow(w) })),
@@ -360,6 +377,17 @@ app.get("/api/state", (_req, res) => {
       currentlyInWindow: scheduler.currentWindow() || null,
     },
   });
+});
+
+app.get("/api/fb-pages", requireAdmin, (_req, res) => {
+  res.json({ fbPages: listFbPages() });
+});
+
+app.post("/api/fb-pages/:id/poll", requireAdmin, async (req, res) => {
+  const src = fbPages.get(req.params.id);
+  if (!src) return res.status(404).json({ error: "not found" });
+  await src._liveDetectLoop().catch(() => {});
+  res.json({ source: src.snapshot() });
 });
 
 // --- HTTP + WS ---
@@ -372,10 +400,46 @@ wss.on("connection", (ws) => {
       type: "init",
       channels: listChannels(),
       sources: listDirectSources(),
+      fbPages: listFbPages(),
       recent,
     })
   );
 });
+
+// --- Facebook pages from env ---
+function startFbPagesFromEnv() {
+  const raw = process.env.FB_PAGES;
+  if (!raw) {
+    console.log("[fb] FB_PAGES env not set — skipping Facebook integration");
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.warn(`[fb] FB_PAGES is not valid JSON: ${err.message}`);
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    console.warn("[fb] FB_PAGES must be an array of {name, id, token}");
+    return;
+  }
+  for (const p of parsed) {
+    if (!p || !p.id || !p.token) {
+      console.warn("[fb] skipping invalid page entry:", p);
+      continue;
+    }
+    try {
+      const src = new FacebookSource(p);
+      fbPages.set(src.pageId, src);
+      attachFbPage(src);
+      src.start();
+      console.log(`[fb] watching page: ${p.name || p.id}`);
+    } catch (err) {
+      console.warn(`[fb] failed to start page ${p.id}: ${err.message}`);
+    }
+  }
+}
 
 // --- Startup: load persisted channels ---
 async function startup() {
@@ -403,6 +467,7 @@ async function startup() {
     }
   }
   console.log(`[server] loaded ${channels.size} persisted channel(s)`);
+  startFbPagesFromEnv();
   scheduler.start();
   console.log(
     `[server] scheduler started — windows: ${scheduler.windows
