@@ -1,25 +1,10 @@
 // Viewer page logic: connects to /ws, renders incoming chat messages.
+// Auto-scroll is always on. Removed the toggle button + counter at the
+// user's request — keep the UI clean and just always pin to newest.
 const chatEl = document.getElementById("chat");
 const statusEl = document.getElementById("status");
-const countEl = document.getElementById("count");
-const autoscrollBtn = document.getElementById("autoscroll");
 
-let autoscroll = true;
-let count = 0;
 const seen = new Set();
-
-autoscrollBtn.addEventListener("click", () => {
-  autoscroll = !autoscroll;
-  autoscrollBtn.classList.toggle("on", autoscroll);
-  autoscrollBtn.textContent = `Auto-scroll: ${autoscroll ? "ON" : "OFF"}`;
-  if (autoscroll) scrollToBottom();
-});
-
-// Note: deliberately NOT auto-disabling on user scroll. The previous version
-// did this but the smooth-scroll animation triggered scroll events that the
-// handler misread as "user scrolled up" and switched itself off after the
-// first message. Auto-scroll is on by default and stays on until the user
-// explicitly clicks the toggle.
 
 function scrollToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;
@@ -96,24 +81,33 @@ function renderMessage(msg) {
   // Cap rendered nodes for memory.
   while (chatEl.children.length > 500) chatEl.firstChild.remove();
 
-  count++;
-  countEl.textContent = count;
-  if (autoscroll) scrollToBottom();
+  scrollToBottom();
 }
 
-function updateStatusFromSources(sources) {
-  if (!sources || sources.length === 0) {
-    setStatus("no sources — add a YouTube URL in /admin", "offline");
+// Status is computed from both channels (auto-watched) and direct sources
+// (one-off video URLs). The viewer doesn't care which produced a message;
+// it just shows "X live" if anything is currently producing chat, or a
+// neutral "watching" / "idle" otherwise.
+function updateStatusFromState({ channels = [], sources = [] } = {}) {
+  const totalConfigured = channels.length + sources.length;
+  if (totalConfigured === 0) {
+    setStatus("no channels yet — add one in admin", "offline");
     return;
   }
-  const live = sources.filter((s) => s.status === "live").length;
-  if (live > 0) {
-    setStatus(`${live}/${sources.length} live`, "live");
+  const liveChannels = channels.filter((c) => c.status === "live").length;
+  const liveSources = sources.filter((s) => s.status === "live").length;
+  const liveCount = liveChannels + liveSources;
+  if (liveCount > 0) {
+    setStatus(`${liveCount} live`, "live");
+    return;
+  }
+  // Nothing live right now — but channels may be polling/watching, and
+  // sources may be reconnecting. Show that we're awake and waiting.
+  const watching = channels.filter((c) => c.status === "watching").length;
+  if (watching > 0) {
+    setStatus(`watching ${watching} channel${watching > 1 ? "s" : ""}`, "offline");
   } else {
-    setStatus(
-      `${sources.length} source(s) — ${sources.map((s) => s.status).join(", ")}`,
-      "offline"
-    );
+    setStatus("idle", "offline");
   }
 }
 
@@ -138,30 +132,31 @@ function connect() {
       case "init":
         chatEl.innerHTML = "";
         seen.clear();
-        count = 0;
-        countEl.textContent = "0";
         if (!data.recent || data.recent.length === 0) {
           chatEl.innerHTML = `<div class="empty">Waiting for chat messages…</div>`;
         } else {
           for (const m of data.recent) renderMessage(m);
         }
-        updateStatusFromSources(data.sources);
+        updateStatusFromState({ channels: data.channels, sources: data.sources });
         break;
       case "message":
         renderMessage(data.message);
         break;
+      case "channel_status":
+      case "channel_removed":
+      case "source_status":
+      case "source_removed":
       case "status":
-        // Refresh status by refetching from the ring (simple approach).
+        // Status changed somewhere — refetch authoritative state to update
+        // the indicator. Cheap call, returns instantly.
         fetch("/api/state")
           .then((r) => r.json())
-          .then((s) => updateStatusFromSources(s.sources))
+          .then((s) => updateStatusFromState(s))
           .catch(() => {});
         break;
       case "cleared":
         chatEl.innerHTML = `<div class="empty">Cleared.</div>`;
         seen.clear();
-        count = 0;
-        countEl.textContent = "0";
         break;
     }
   };

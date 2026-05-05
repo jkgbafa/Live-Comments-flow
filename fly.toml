@@ -4,7 +4,7 @@
 # before your first `fly launch` (e.g. "flow-live-chat", "dhmm-live-chat",
 # something tied to you). Or run `fly launch` and let it pick a name.
 
-app = "live-chat-aggregator"
+app = "live-comments-flow"
 primary_region = "iad"  # US East. Change to a region near you / your viewers.
 
 [build]
