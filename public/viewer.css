@@ -216,7 +216,8 @@ body {
 .msg .time {
   margin-left: auto;
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--text);
+  font-weight: 500;
   flex: 0 0 auto;
 }
 
