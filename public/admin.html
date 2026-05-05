@@ -238,6 +238,37 @@
       .schedule-line .live-now {
         color: #2ecc71;
       }
+      .live-banner {
+        background: linear-gradient(135deg, rgba(46, 204, 113, 0.08), rgba(46, 204, 113, 0.02));
+        border: 1px solid rgba(46, 204, 113, 0.18);
+        border-radius: 12px;
+        padding: 18px 20px;
+        margin-bottom: 16px;
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+      }
+      .live-banner.idle {
+        background: var(--bg-bubble);
+        border-color: var(--border);
+      }
+      .live-banner-num {
+        font-size: 38px;
+        font-weight: 700;
+        line-height: 1;
+        color: #2ecc71;
+        letter-spacing: -0.5px;
+      }
+      .live-banner.idle .live-banner-num {
+        color: var(--text-dim);
+      }
+      .live-banner-label {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        color: var(--text-dim);
+        font-weight: 500;
+      }
       .login-screen {
         max-width: 400px;
         margin: 80px auto;
@@ -334,6 +365,11 @@
           <img src="/flow-logo.png" alt="Flow" class="brand-logo" />
         </div>
       </header>
+
+      <div class="live-banner" id="live-banner">
+        <span class="live-banner-num" id="live-banner-num">—</span>
+        <span class="live-banner-label" id="live-banner-label">platforms live</span>
+      </div>
 
       <div class="card">
         <h2>Add a YouTube channel</h2>
@@ -636,6 +672,18 @@
         );
       }
 
+      function renderLiveBanner(channels, sources) {
+        const liveChannels = (channels || []).filter((c) => c.status === "live");
+        const liveSources = (sources || []).filter((s) => s.status === "live");
+        const total = liveChannels.length + liveSources.length;
+        const banner = $("live-banner");
+        $("live-banner-num").textContent = total;
+        $("live-banner-label").textContent =
+          total === 1 ? "platform live" : "platforms live";
+        if (total > 0) banner.classList.remove("idle");
+        else banner.classList.add("idle");
+      }
+
       async function refresh() {
         try {
           const [chRes, srcRes, schedRes] = await Promise.all([
@@ -643,6 +691,7 @@
             api("/api/sources"),
             api("/api/schedule"),
           ]);
+          renderLiveBanner(chRes.channels, srcRes.sources);
           renderChannels(chRes.channels);
           renderSources(srcRes.sources);
           renderSchedule(schedRes);

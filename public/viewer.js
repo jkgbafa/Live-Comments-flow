@@ -1,19 +1,13 @@
 // Viewer page logic: connects to /ws, renders incoming chat messages.
-// Auto-scroll is always on. Removed the toggle button + counter at the
-// user's request — keep the UI clean and just always pin to newest.
+// Auto-scroll is always on. The viewer is intentionally minimal: just the
+// logo, "Live Chat" title, and the message stream — no status indicators
+// (those live in admin where they're useful for the operator).
 const chatEl = document.getElementById("chat");
-const statusEl = document.getElementById("status");
 
 const seen = new Set();
 
 function scrollToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;
-}
-
-function setStatus(text, kind) {
-  statusEl.textContent = text;
-  statusEl.classList.remove("live", "offline");
-  if (kind) statusEl.classList.add(kind);
 }
 
 function fmtTime(iso) {
@@ -54,19 +48,33 @@ function renderMessage(msg) {
     ? `<img class="avatar" src="${msg.avatar}" alt="" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">`
     : `<div class="avatar"></div>`;
 
-  const sourceIcon = SOURCE_ICONS[msg.source] || "";
+  // Prefer the explicit `platform` (set by ChannelWatcher) over the older
+  // `source` field that older direct sources still use. Both resolve to the
+  // same icon mapping.
+  const platform = msg.platform || msg.source || "";
+  const sourceIcon = SOURCE_ICONS[platform] || "";
 
   let roleBadge = "";
   if (msg.isOwner) roleBadge = `<span class="badge role">Owner</span>`;
   else if (msg.isModerator) roleBadge = `<span class="badge role">Mod</span>`;
   else if (msg.membership) roleBadge = `<span class="badge role">Member</span>`;
 
+  // Channel/page subtext shown next to the platform icon, e.g.
+  // "Dag Heward-Mills" or "Flow Church". For direct sources without a
+  // channel, this is empty.
+  const channelLabel = msg.channelName || "";
+
   el.innerHTML = `
     ${avatarHtml}
     <div class="body">
       <div class="head">
-        <span class="source-icon">${sourceIcon}</span>
+        <span class="source-icon" title="${platform}">${sourceIcon}</span>
         <span class="author"></span>
+        ${
+          channelLabel
+            ? `<span class="channel-tag"></span>`
+            : ""
+        }
         ${roleBadge}
         <span class="time">${fmtTime(msg.timestamp)}</span>
       </div>
@@ -75,6 +83,9 @@ function renderMessage(msg) {
   `;
   el.querySelector(".author").textContent = msg.author;
   el.querySelector(".text").textContent = msg.text;
+  if (channelLabel) {
+    el.querySelector(".channel-tag").textContent = channelLabel;
+  }
 
   chatEl.appendChild(el);
 
@@ -82,33 +93,6 @@ function renderMessage(msg) {
   while (chatEl.children.length > 500) chatEl.firstChild.remove();
 
   scrollToBottom();
-}
-
-// Status is computed from both channels (auto-watched) and direct sources
-// (one-off video URLs). The viewer doesn't care which produced a message;
-// it just shows "X live" if anything is currently producing chat, or a
-// neutral "watching" / "idle" otherwise.
-function updateStatusFromState({ channels = [], sources = [] } = {}) {
-  const totalConfigured = channels.length + sources.length;
-  if (totalConfigured === 0) {
-    setStatus("no platforms yet — add one in admin", "offline");
-    return;
-  }
-  const liveChannels = channels.filter((c) => c.status === "live").length;
-  const liveSources = sources.filter((s) => s.status === "live").length;
-  const liveCount = liveChannels + liveSources;
-  if (liveCount > 0) {
-    setStatus(`${liveCount} platform${liveCount > 1 ? "s" : ""} live`, "live");
-    return;
-  }
-  // Nothing live right now — but channels may be polling/watching, and
-  // sources may be reconnecting. Show that we're awake and waiting.
-  const watching = channels.filter((c) => c.status === "watching").length;
-  if (watching > 0) {
-    setStatus(`watching ${watching} platform${watching > 1 ? "s" : ""}`, "offline");
-  } else {
-    setStatus("idle", "offline");
-  }
 }
 
 let ws;
@@ -137,22 +121,9 @@ function connect() {
         } else {
           for (const m of data.recent) renderMessage(m);
         }
-        updateStatusFromState({ channels: data.channels, sources: data.sources });
         break;
       case "message":
         renderMessage(data.message);
-        break;
-      case "channel_status":
-      case "channel_removed":
-      case "source_status":
-      case "source_removed":
-      case "status":
-        // Status changed somewhere — refetch authoritative state to update
-        // the indicator. Cheap call, returns instantly.
-        fetch("/api/state")
-          .then((r) => r.json())
-          .then((s) => updateStatusFromState(s))
-          .catch(() => {});
         break;
       case "cleared":
         chatEl.innerHTML = `<div class="empty">Cleared.</div>`;
@@ -162,7 +133,7 @@ function connect() {
   };
 
   ws.onclose = () => {
-    setStatus("disconnected — reconnecting…", "offline");
+    // Silently reconnect — no status indicator on the viewer.
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 10000);
   };

@@ -199,6 +199,16 @@ body {
   word-break: break-word;
 }
 
+.msg .channel-tag {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 .msg.owner .author {
   color: var(--owner);
 }
