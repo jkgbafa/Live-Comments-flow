@@ -166,6 +166,15 @@ body {
   object-fit: cover;
 }
 
+/* Placeholder avatar for FB anonymous live commenters (FB's API privacy
+   policy strips commenter name/photo on public live broadcasts). */
+.msg .avatar-fb {
+  background: var(--facebook);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .msg .body {
   flex: 1 1 auto;
   min-width: 0;

@@ -43,9 +43,19 @@ function renderMessage(msg) {
   // Deliberately NOT exposing isOwner / isModerator / membership in the UI —
   // we don't want to out moderators to the public chat audience.
 
-  const avatarHtml = msg.avatar
-    ? `<img class="avatar" src="${msg.avatar}" alt="" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">`
-    : `<div class="avatar"></div>`;
+  // Facebook strips commenter `from` info from public live videos (privacy
+  // policy), so FB messages have no avatar. Use a styled Facebook badge
+  // as a placeholder so the row doesn't look broken.
+  let avatarHtml;
+  if (msg.avatar) {
+    avatarHtml = `<img class="avatar" src="${msg.avatar}" alt="" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">`;
+  } else if ((msg.platform || msg.source) === "facebook") {
+    avatarHtml = `<div class="avatar avatar-fb" aria-label="Facebook viewer">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="white"><path d="M22.7 0H1.3A1.3 1.3 0 0 0 0 1.3v21.4A1.3 1.3 0 0 0 1.3 24h11.5v-9.3H9.7v-3.6h3.1V8.4c0-3.1 1.9-4.8 4.7-4.8 1.3 0 2.5.1 2.8.1v3.3h-1.9c-1.5 0-1.8.7-1.8 1.8v2.3h3.6l-.5 3.6h-3.1V24h6.1a1.3 1.3 0 0 0 1.3-1.3V1.3A1.3 1.3 0 0 0 22.7 0z"/></svg>
+    </div>`;
+  } else {
+    avatarHtml = `<div class="avatar"></div>`;
+  }
 
   // Prefer the explicit `platform` (set by ChannelWatcher) over the older
   // `source` field that older direct sources still use. Both resolve to the
