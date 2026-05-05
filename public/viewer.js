@@ -91,21 +91,21 @@ function renderMessage(msg) {
 function updateStatusFromState({ channels = [], sources = [] } = {}) {
   const totalConfigured = channels.length + sources.length;
   if (totalConfigured === 0) {
-    setStatus("no channels yet — add one in admin", "offline");
+    setStatus("no platforms yet — add one in admin", "offline");
     return;
   }
   const liveChannels = channels.filter((c) => c.status === "live").length;
   const liveSources = sources.filter((s) => s.status === "live").length;
   const liveCount = liveChannels + liveSources;
   if (liveCount > 0) {
-    setStatus(`${liveCount} live`, "live");
+    setStatus(`${liveCount} platform${liveCount > 1 ? "s" : ""} live`, "live");
     return;
   }
   // Nothing live right now — but channels may be polling/watching, and
   // sources may be reconnecting. Show that we're awake and waiting.
   const watching = channels.filter((c) => c.status === "watching").length;
   if (watching > 0) {
-    setStatus(`watching ${watching} channel${watching > 1 ? "s" : ""}`, "offline");
+    setStatus(`watching ${watching} platform${watching > 1 ? "s" : ""}`, "offline");
   } else {
     setStatus("idle", "offline");
   }

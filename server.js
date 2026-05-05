@@ -21,7 +21,47 @@ const MAX_BUFFER = 200;
 
 const app = express();
 app.use(express.json());
+
+// Clean URL for admin: /admin → admin.html. Must be registered BEFORE the
+// static middleware so it wins over any default file matching.
+app.get("/admin", (_req, res) =>
+  res.sendFile(path.join(__dirname, "public", "admin.html"))
+);
+
 app.use(express.static(path.join(__dirname, "public")));
+
+// --- Auth helpers ---
+// Tiny inline cookie parser (avoids pulling in cookie-parser as a dep).
+function parseCookies(cookieHeader) {
+  const out = {};
+  if (!cookieHeader) return out;
+  for (const part of cookieHeader.split(/;\s*/)) {
+    const eq = part.indexOf("=");
+    if (eq > 0) {
+      const k = part.slice(0, eq);
+      const v = part.slice(eq + 1);
+      try {
+        out[k] = decodeURIComponent(v);
+      } catch {
+        out[k] = v;
+      }
+    }
+  }
+  return out;
+}
+
+function getAdminToken(req) {
+  // Three sources, in priority order:
+  //   1. Cookie set by /api/admin/login (the new clean flow)
+  //   2. x-admin-token header (for API tools / curl)
+  //   3. ?token= query (legacy fallback for old bookmarks)
+  return (
+    parseCookies(req.headers.cookie || "").lca_admin ||
+    req.header("x-admin-token") ||
+    req.query.token ||
+    null
+  );
+}
 
 // State
 const channels = new Map(); // id -> ChannelWatcher
@@ -79,10 +119,43 @@ async function persistChannels() {
 }
 
 function requireAdmin(req, res, next) {
-  const token = req.header("x-admin-token") || req.query.token;
+  const token = getAdminToken(req);
   if (token !== ADMIN_TOKEN) return res.status(401).json({ error: "unauthorized" });
   next();
 }
+
+// --- Auth API ---
+// POST /api/admin/login — sets a session cookie if password matches.
+// Cookie is httpOnly + sameSite=strict + secure (when behind https), so it
+// can't be read by JS or sent cross-site.
+app.post("/api/admin/login", (req, res) => {
+  const { password } = req.body || {};
+  if (typeof password !== "string" || password !== ADMIN_TOKEN) {
+    return res.status(401).json({ error: "wrong password" });
+  }
+  const onHttps =
+    req.protocol === "https" ||
+    req.header("x-forwarded-proto") === "https";
+  res.cookie("lca_admin", ADMIN_TOKEN, {
+    httpOnly: true,
+    secure: onHttps,
+    sameSite: "strict",
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    path: "/",
+  });
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/logout", (_req, res) => {
+  res.clearCookie("lca_admin", { path: "/" });
+  res.json({ ok: true });
+});
+
+// Quick check used by the admin page on load to know if the cookie is valid.
+app.get("/api/admin/me", (req, res) => {
+  const token = getAdminToken(req);
+  res.json({ loggedIn: token === ADMIN_TOKEN });
+});
 
 // --- Channels API (primary) ---
 app.get("/api/channels", requireAdmin, (_req, res) => {

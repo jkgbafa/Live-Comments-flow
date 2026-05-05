@@ -200,13 +200,87 @@
         gap: 6px;
         align-items: center;
       }
+      .login-screen {
+        max-width: 400px;
+        margin: 80px auto;
+        padding: 24px;
+        background: var(--bg-bubble);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        text-align: center;
+      }
+      .login-screen h1 {
+        margin: 0 0 4px;
+        font-size: 18px;
+        font-weight: 600;
+      }
+      .login-screen p {
+        margin: 0 0 20px;
+        color: var(--text-dim);
+        font-size: 13px;
+      }
+      .login-screen input[type="password"] {
+        width: 100%;
+        background: #0b0d10;
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 12px 14px;
+        border-radius: 8px;
+        font: inherit;
+        font-size: 15px;
+        margin-bottom: 12px;
+      }
+      .login-screen input[type="password"]:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .login-screen button.primary {
+        width: 100%;
+        padding: 12px;
+      }
+      .login-screen .err {
+        margin-top: 12px;
+      }
+      .logout-btn {
+        background: transparent;
+        color: var(--text-dim);
+        border: 1px solid var(--border);
+        padding: 4px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+        margin-left: 8px;
+      }
+      .logout-btn:hover {
+        color: var(--text);
+        border-color: rgba(255, 255, 255, 0.2);
+      }
     </style>
   </head>
   <body>
-    <div class="admin">
+    <!-- Login screen, shown when not authenticated. -->
+    <div id="login-view" class="login-screen" hidden>
+      <h1>Live Chat · Admin</h1>
+      <p>Enter the admin password to manage channels.</p>
+      <form id="login-form">
+        <input
+          id="login-password"
+          type="password"
+          placeholder="admin password"
+          autocomplete="current-password"
+          required
+        />
+        <button class="primary" type="submit">Sign in</button>
+        <div id="login-err" class="err" hidden></div>
+      </form>
+    </div>
+
+    <!-- Admin view, shown when authenticated. -->
+    <div id="admin-view" class="admin" hidden>
       <header class="topbar" style="border-radius: 10px; margin-bottom: 16px">
         <div class="title">Live Chat · Admin</div>
-        <div class="status" id="conn">connecting…</div>
+        <div class="status" id="conn">connecting…<button id="logout" class="logout-btn" type="button">Sign out</button></div>
       </header>
 
       <div class="card">
@@ -262,12 +336,17 @@
     </div>
 
     <script>
-      const params = new URLSearchParams(location.search);
-      const TOKEN = params.get("token") || "";
       const $ = (id) => document.getElementById(id);
 
+      // Cookie session is sent automatically. We also still pass the legacy
+      // ?token= header if someone hits the old URL — that lets the cookie
+      // get refreshed via the normal flow on first request.
+      const params = new URLSearchParams(location.search);
+      const LEGACY_TOKEN = params.get("token") || "";
+
       async function api(path, opts = {}) {
-        const headers = { "x-admin-token": TOKEN, ...(opts.headers || {}) };
+        const headers = { ...(opts.headers || {}) };
+        if (LEGACY_TOKEN) headers["x-admin-token"] = LEGACY_TOKEN;
         if (
           opts.body &&
           typeof opts.body === "object" &&
@@ -276,11 +355,60 @@
           headers["Content-Type"] = "application/json";
           opts.body = JSON.stringify(opts.body);
         }
-        const r = await fetch(path, { ...opts, headers });
+        const r = await fetch(path, {
+          ...opts,
+          headers,
+          credentials: "same-origin",
+        });
         const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        if (!r.ok) {
+          const e = new Error(j.error || `HTTP ${r.status}`);
+          e.status = r.status;
+          throw e;
+        }
         return j;
       }
+
+      // ---- Login flow ----
+      async function isLoggedIn() {
+        try {
+          const r = await api("/api/admin/me");
+          return !!r.loggedIn;
+        } catch {
+          return false;
+        }
+      }
+
+      async function showLogin() {
+        $("admin-view").hidden = true;
+        $("login-view").hidden = false;
+        $("login-password").focus();
+      }
+
+      async function showAdmin() {
+        $("login-view").hidden = true;
+        $("admin-view").hidden = false;
+        await refresh();
+        connectWS();
+      }
+
+      $("login-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const password = $("login-password").value;
+        $("login-err").hidden = true;
+        try {
+          await api("/api/admin/login", {
+            method: "POST",
+            body: { password },
+          });
+          // Strip ?token= from URL if present so the bookmark is clean.
+          if (location.search) history.replaceState({}, "", location.pathname);
+          await showAdmin();
+        } catch (err) {
+          $("login-err").textContent = err.message || "login failed";
+          $("login-err").hidden = false;
+        }
+      });
 
       function pill(status) {
         return `<span class="pill ${status}">${status}</span>`;
@@ -464,30 +592,53 @@
         }
       });
 
-      // Live updates
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${proto}//${location.host}/ws`);
-      ws.onmessage = (ev) => {
+      $("logout").addEventListener("click", async () => {
         try {
-          const d = JSON.parse(ev.data);
-          if (
-            d.type === "init" ||
-            d.type === "channel_status" ||
-            d.type === "channel_removed" ||
-            d.type === "source_status" ||
-            d.type === "source_removed"
-          ) {
-            refresh();
-          }
+          await api("/api/admin/logout", { method: "POST" });
         } catch {}
-      };
-      ws.onclose = () => {
-        $("conn").textContent = "disconnected — refresh page";
-        $("conn").classList.remove("live");
-        $("conn").classList.add("offline");
-      };
+        location.reload();
+      });
 
-      refresh();
+      // WebSocket is only opened after login. We re-establish status updates
+      // from the same socket the viewer uses.
+      function connectWS() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${proto}//${location.host}/ws`);
+        ws.onmessage = (ev) => {
+          try {
+            const d = JSON.parse(ev.data);
+            if (
+              d.type === "init" ||
+              d.type === "channel_status" ||
+              d.type === "channel_removed" ||
+              d.type === "source_status" ||
+              d.type === "source_removed"
+            ) {
+              refresh();
+            }
+          } catch {}
+        };
+        ws.onclose = () => {
+          $("conn").textContent = "disconnected — refresh page";
+          $("conn").classList.remove("live");
+          $("conn").classList.add("offline");
+        };
+      }
+
+      // ---- Boot ----
+      (async () => {
+        // Legacy compat: if URL has ?token=, the api() calls will pass it as
+        // a header on the FIRST request. /api/admin/me will succeed, so we
+        // proceed straight to admin. The user should re-login via the form
+        // for a clean session, but their URL still works.
+        if (await isLoggedIn()) {
+          // Strip ?token= from URL so the bookmark is clean.
+          if (location.search) history.replaceState({}, "", location.pathname);
+          await showAdmin();
+        } else {
+          await showLogin();
+        }
+      })();
     </script>
   </body>
 </html>
