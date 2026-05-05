@@ -14,7 +14,12 @@ const { WebSocketServer } = require("ws");
 const { YouTubeSource } = require("./lib/youtube-source");
 const { ChannelWatcher } = require("./lib/channel-watcher");
 const { FacebookSource } = require("./lib/facebook-source");
-const { loadChannels, saveChannels } = require("./lib/store");
+const {
+  loadChannels,
+  saveChannels,
+  loadFbState,
+  saveFbState,
+} = require("./lib/store");
 const {
   Scheduler,
   DEFAULT_WINDOWS,
@@ -379,6 +384,16 @@ app.get("/api/state", (_req, res) => {
   });
 });
 
+// In-memory mirror of FB enabled/disabled state, mapped to page IDs.
+// Persisted to fb-state.json so removals/pauses survive restarts.
+let fbState = {};
+
+async function persistFbState() {
+  await saveFbState(fbState).catch((err) =>
+    console.warn("[server] saveFbState failed:", err.message)
+  );
+}
+
 app.get("/api/fb-pages", requireAdmin, (_req, res) => {
   res.json({ fbPages: listFbPages() });
 });
@@ -388,6 +403,35 @@ app.post("/api/fb-pages/:id/poll", requireAdmin, async (req, res) => {
   if (!src) return res.status(404).json({ error: "not found" });
   await src._liveDetectLoop().catch(() => {});
   res.json({ source: src.snapshot() });
+});
+
+app.post("/api/fb-pages/:id/start", requireAdmin, async (req, res) => {
+  const src = fbPages.get(req.params.id);
+  if (!src) return res.status(404).json({ error: "not found" });
+  src.start();
+  fbState[req.params.id] = { ...(fbState[req.params.id] || {}), enabled: true };
+  await persistFbState();
+  res.json({ source: src.snapshot() });
+});
+
+app.post("/api/fb-pages/:id/stop", requireAdmin, async (req, res) => {
+  const src = fbPages.get(req.params.id);
+  if (!src) return res.status(404).json({ error: "not found" });
+  src.stop();
+  fbState[req.params.id] = { ...(fbState[req.params.id] || {}), enabled: false };
+  await persistFbState();
+  res.json({ source: src.snapshot() });
+});
+
+app.delete("/api/fb-pages/:id", requireAdmin, async (req, res) => {
+  const src = fbPages.get(req.params.id);
+  if (!src) return res.status(404).json({ error: "not found" });
+  src.stop();
+  fbPages.delete(req.params.id);
+  fbState[req.params.id] = { enabled: false, removed: true };
+  await persistFbState();
+  broadcast({ type: "fb_removed", id: req.params.id });
+  res.json({ ok: true });
 });
 
 // --- HTTP + WS ---
@@ -407,7 +451,7 @@ wss.on("connection", (ws) => {
 });
 
 // --- Facebook pages from env ---
-function startFbPagesFromEnv() {
+async function startFbPagesFromEnv() {
   const raw = process.env.FB_PAGES;
   if (!raw) {
     console.log("[fb] FB_PAGES env not set — skipping Facebook integration");
@@ -424,17 +468,31 @@ function startFbPagesFromEnv() {
     console.warn("[fb] FB_PAGES must be an array of {name, id, token}");
     return;
   }
+  fbState = await loadFbState();
   for (const p of parsed) {
     if (!p || !p.id || !p.token) {
       console.warn("[fb] skipping invalid page entry:", p);
+      continue;
+    }
+    const persisted = fbState[String(p.id)] || {};
+    if (persisted.removed) {
+      console.log(`[fb] page removed by admin (skipping): ${p.name || p.id}`);
       continue;
     }
     try {
       const src = new FacebookSource(p);
       fbPages.set(src.pageId, src);
       attachFbPage(src);
-      src.start();
-      console.log(`[fb] watching page: ${p.name || p.id}`);
+      // If the admin previously paused this page, keep it paused.
+      if (persisted.enabled === false) {
+        src.enabled = false;
+        src.status = "stopped";
+        console.log(`[fb] page paused (not starting): ${p.name || p.id}`);
+        // Don't call src.start() — leave it idle but in the list.
+      } else {
+        src.start();
+        console.log(`[fb] watching page: ${p.name || p.id}`);
+      }
     } catch (err) {
       console.warn(`[fb] failed to start page ${p.id}: ${err.message}`);
     }
@@ -467,7 +525,7 @@ async function startup() {
     }
   }
   console.log(`[server] loaded ${channels.size} persisted channel(s)`);
-  startFbPagesFromEnv();
+  await startFbPagesFromEnv();
   scheduler.start();
   console.log(
     `[server] scheduler started — windows: ${scheduler.windows

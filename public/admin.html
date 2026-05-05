@@ -579,7 +579,8 @@
         const row = document.createElement("div");
         row.className = "channel-row";
         const isLive = p.status === "live";
-        const labelText = `FACEBOOK - ${p.pageName}`;
+        const labelText = p.pageName;
+        const enabled = p.enabled !== false;
         row.innerHTML = `
           <div class="info">
             <div class="title"></div>
@@ -596,7 +597,13 @@
           </div>
           ${pill(p.status)}
           <div class="actions">
+            ${
+              enabled
+                ? `<button class="ghost" data-act="stop">Pause</button>`
+                : `<button class="ghost" data-act="start">Start</button>`
+            }
             <button class="ghost" data-act="poll">Check now</button>
+            <button class="danger" data-act="remove">Remove</button>
           </div>
         `;
         row.querySelector(".title").textContent = labelText;
@@ -604,8 +611,16 @@
           btn.addEventListener("click", async () => {
             btn.disabled = true;
             try {
-              if (btn.dataset.act === "poll") {
-                await api(`/api/fb-pages/${p.pageId}/poll`, { method: "POST" });
+              const act = btn.dataset.act;
+              if (act === "start") await api(`/api/fb-pages/${p.pageId}/start`, { method: "POST" });
+              else if (act === "stop") await api(`/api/fb-pages/${p.pageId}/stop`, { method: "POST" });
+              else if (act === "poll") await api(`/api/fb-pages/${p.pageId}/poll`, { method: "POST" });
+              else if (act === "remove") {
+                if (!confirm(`Remove "${labelText}"? It won't come back unless you re-enable via the FB_PAGES secret.`)) {
+                  btn.disabled = false;
+                  return;
+                }
+                await api(`/api/fb-pages/${p.pageId}`, { method: "DELETE" });
               }
               await refresh();
             } catch (e) {
@@ -622,8 +637,7 @@
         row.className = "channel-row";
         const isLive = c.status === "live";
         const friendlyName = c.name || c.displayName || c.canonical;
-        const labelText =
-          c.label || `${(c.platform || "youtube").toUpperCase()} - ${friendlyName}`;
+        const labelText = c.label || friendlyName;
         row.innerHTML = `
           <div class="info">
             <div class="title"></div>
@@ -832,7 +846,8 @@
               d.type === "channel_removed" ||
               d.type === "source_status" ||
               d.type === "source_removed" ||
-              d.type === "fb_status"
+              d.type === "fb_status" ||
+              d.type === "fb_removed"
             ) {
               refresh();
             }
