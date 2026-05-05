@@ -70,9 +70,10 @@ body {
 
 .topbar .brand-logo {
   height: 22px;
-  width: auto;
+  width: 22px;
   display: block;
   opacity: 0.95;
+  object-fit: contain;
 }
 
 .status {

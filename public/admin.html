@@ -229,9 +229,9 @@
       }
       .login-screen .login-logo {
         display: block;
-        margin: 0 auto 18px;
-        height: 44px;
-        width: auto;
+        margin: 0 auto 14px;
+        height: 32px;
+        width: 32px;
         opacity: 0.98;
       }
       .login-screen h1 {
@@ -465,9 +465,9 @@
       }
 
       const PLATFORM_LABELS = {
-        youtube: "YouTube",
-        facebook: "Facebook",
-        tiktok: "TikTok",
+        youtube: "YOUTUBE",
+        facebook: "FACEBOOK",
+        tiktok: "TIKTOK",
       };
 
       function renderChannels(list) {
@@ -503,7 +503,8 @@
         row.className = "channel-row";
         const isLive = c.status === "live";
         const friendlyName = c.name || c.displayName || c.canonical;
-        const labelText = c.label || `${c.platform} - ${friendlyName}`;
+        const labelText =
+          c.label || `${(c.platform || "youtube").toUpperCase()} - ${friendlyName}`;
         row.innerHTML = `
           <div class="info">
             <div class="title"></div>
