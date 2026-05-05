@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin · Live Chat</title>
+    <link rel="stylesheet" href="/viewer.css" />
+    <style>
+      .admin {
+        max-width: 720px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+      .card {
+        background: var(--bg-bubble);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      .card h2 {
+        margin: 0 0 12px;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        color: var(--text-dim);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      input[type="text"] {
+        flex: 1;
+        background: #0b0d10;
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 10px 12px;
+        border-radius: 8px;
+        font: inherit;
+      }
+      input[type="text"]:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        color: white;
+        border: 0;
+        padding: 10px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 600;
+      }
+      button.primary:hover {
+        filter: brightness(1.1);
+      }
+      button.danger {
+        background: transparent;
+        color: #ef5350;
+        border: 1px solid rgba(239, 83, 80, 0.4);
+        padding: 6px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+      }
+      button.danger:hover {
+        background: rgba(239, 83, 80, 0.1);
+      }
+      .source-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 0;
+        border-top: 1px solid var(--border);
+      }
+      .source-row:first-child {
+        border-top: 0;
+      }
+      .source-row .info {
+        flex: 1;
+        min-width: 0;
+      }
+      .source-row .info .url {
+        font-size: 13px;
+        color: var(--text-dim);
+        word-break: break-all;
+      }
+      .source-row .info .title {
+        font-size: 14px;
+        margin-bottom: 2px;
+      }
+      .pill {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      .pill.live {
+        background: rgba(46, 204, 113, 0.15);
+        color: #2ecc71;
+      }
+      .pill.connecting,
+      .pill.reconnecting {
+        background: rgba(240, 196, 25, 0.15);
+        color: #f0c419;
+      }
+      .pill.error,
+      .pill.stopped {
+        background: rgba(239, 83, 80, 0.15);
+        color: #ef5350;
+      }
+      .empty-list {
+        color: var(--text-dim);
+        font-size: 13px;
+        text-align: center;
+        padding: 12px 0;
+      }
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 8px;
+      }
+      .toolbar a {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 13px;
+      }
+      .toolbar a:hover {
+        text-decoration: underline;
+      }
+      .err {
+        color: #ef5350;
+        font-size: 13px;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="admin">
+      <header class="topbar" style="border-radius: 10px; margin-bottom: 16px">
+        <div class="title">Live Chat · Admin</div>
+        <div class="status" id="conn">connecting…</div>
+      </header>
+
+      <div class="card">
+        <h2>Add YouTube live URL</h2>
+        <form id="add-form" class="row" autocomplete="off">
+          <input
+            id="url"
+            type="text"
+            placeholder="https://www.youtube.com/watch?v=..."
+            required
+          />
+          <button class="primary" type="submit">Add</button>
+        </form>
+        <div id="add-err" class="err" hidden></div>
+        <div class="toolbar">
+          <a href="/" target="_blank">Open viewer ↗</a>
+          <span style="color: var(--text-dim); font-size: 13px">·</span>
+          <button id="clear" class="danger">Clear chat history</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Active sources</h2>
+        <div id="sources"></div>
+      </div>
+    </div>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const TOKEN = params.get("token") || "";
+      const $ = (id) => document.getElementById(id);
+
+      async function api(path, opts = {}) {
+        const headers = { "x-admin-token": TOKEN, ...(opts.headers || {}) };
+        if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
+          headers["Content-Type"] = "application/json";
+          opts.body = JSON.stringify(opts.body);
+        }
+        const r = await fetch(path, { ...opts, headers });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        return j;
+      }
+
+      function statusPillClass(s) {
+        return s || "unknown";
+      }
+
+      function renderSources(sources) {
+        const root = $("sources");
+        if (!sources || sources.length === 0) {
+          root.innerHTML = `<div class="empty-list">No sources yet. Paste a YouTube live URL above.</div>`;
+          return;
+        }
+        root.innerHTML = "";
+        for (const s of sources) {
+          const row = document.createElement("div");
+          row.className = "source-row";
+          row.innerHTML = `
+            <div class="info">
+              <div class="title"></div>
+              <div class="url"></div>
+            </div>
+            <span class="pill ${statusPillClass(s.status)}">${s.status}</span>
+            <button class="danger" data-url="">Remove</button>
+          `;
+          row.querySelector(".title").textContent = s.title || s.videoId || "(loading…)";
+          row.querySelector(".url").textContent = s.input;
+          const btn = row.querySelector("button.danger");
+          btn.dataset.url = s.input;
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            try {
+              await api("/api/sources", {
+                method: "DELETE",
+                body: { url: s.input },
+              });
+              await refresh();
+            } catch (e) {
+              alert(e.message);
+              btn.disabled = false;
+            }
+          });
+          root.appendChild(row);
+        }
+      }
+
+      async function refresh() {
+        try {
+          const j = await api("/api/sources");
+          renderSources(j.sources);
+          $("conn").textContent = "connected";
+          $("conn").classList.add("live");
+        } catch (e) {
+          $("conn").textContent = e.message;
+          $("conn").classList.remove("live");
+          $("conn").classList.add("offline");
+        }
+      }
+
+      $("add-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const url = $("url").value.trim();
+        if (!url) return;
+        $("add-err").hidden = true;
+        try {
+          await api("/api/sources", { method: "POST", body: { url } });
+          $("url").value = "";
+          await refresh();
+        } catch (err) {
+          $("add-err").textContent = err.message;
+          $("add-err").hidden = false;
+        }
+      });
+
+      $("clear").addEventListener("click", async () => {
+        if (!confirm("Clear recent chat history?")) return;
+        try {
+          await api("/api/clear-recent", { method: "POST" });
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+
+      // Live updates: a WebSocket on the same page so admin sees status changes.
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          if (d.type === "init" || d.type === "status" || d.type === "removed")
+            refresh();
+        } catch {}
+      };
+      ws.onclose = () => {
+        $("conn").textContent = "disconnected";
+        $("conn").classList.remove("live");
+        $("conn").classList.add("offline");
+      };
+
+      refresh();
+    </script>
+  </body>
+</html>

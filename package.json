@@ -1,0 +1,22 @@
+{
+  "name": "live-chat-aggregator",
+  "version": "1.0.0",
+  "description": "Multi-source live chat aggregator — pulls YouTube live chat in real-time and shows it in a dark, Restream-style viewer.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "tunnel": "cloudflared tunnel --url http://localhost:3000"
+  },
+  "keywords": ["youtube", "live-chat", "websocket", "restream"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "masterchat": "^1.1.0",
+    "ws": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
