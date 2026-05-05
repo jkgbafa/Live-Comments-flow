@@ -50,8 +50,14 @@ function renderMessage(msg) {
   if (msg.avatar) {
     avatarHtml = `<img class="avatar" src="${msg.avatar}" alt="" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">`;
   } else if ((msg.platform || msg.source) === "facebook") {
-    avatarHtml = `<div class="avatar avatar-fb" aria-label="Facebook viewer">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="white"><path d="M22.7 0H1.3A1.3 1.3 0 0 0 0 1.3v21.4A1.3 1.3 0 0 0 1.3 24h11.5v-9.3H9.7v-3.6h3.1V8.4c0-3.1 1.9-4.8 4.7-4.8 1.3 0 2.5.1 2.8.1v3.3h-1.9c-1.5 0-1.8.7-1.8 1.8v2.3h3.6l-.5 3.6h-3.1V24h6.1a1.3 1.3 0 0 0 1.3-1.3V1.3A1.3 1.3 0 0 0 22.7 0z"/></svg>
+    // Generic person silhouette (FB API hides the real photo on public
+    // live broadcasts). Background uses FB blue so the platform is still
+    // visually distinct, with a white person icon in the centre.
+    avatarHtml = `<div class="avatar avatar-fb" aria-label="Facebook">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="white" aria-hidden="true">
+        <circle cx="12" cy="8" r="4"/>
+        <path d="M12 14c-4 0-8 2-8 5v1h16v-1c0-3-4-5-8-5z"/>
+      </svg>
     </div>`;
   } else {
     avatarHtml = `<div class="avatar"></div>`;
