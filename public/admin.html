@@ -218,6 +218,26 @@
       .platform-section:first-child .platform-heading {
         padding-top: 0;
       }
+      .watching-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      .watching-head h2 {
+        margin: 0;
+      }
+      .schedule-line {
+        font-size: 11px;
+        color: var(--text-dim);
+        text-align: right;
+        flex-shrink: 0;
+        line-height: 1.4;
+      }
+      .schedule-line .live-now {
+        color: #2ecc71;
+      }
       .login-screen {
         max-width: 400px;
         margin: 80px auto;
@@ -340,12 +360,10 @@
       </div>
 
       <div class="card">
-        <h2>Schedule</h2>
-        <p class="help" id="schedule-help">Loading…</p>
-      </div>
-
-      <div class="card">
-        <h2>Watching</h2>
+        <div class="watching-head">
+          <h2>Watching</h2>
+          <div class="schedule-line" id="schedule-help">…</div>
+        </div>
         <div id="platforms"></div>
       </div>
 
@@ -560,24 +578,21 @@
       function renderSchedule(schedule) {
         const help = $("schedule-help");
         if (!schedule || !schedule.windows || schedule.windows.length === 0) {
-          help.textContent = "No schedule configured.";
+          help.textContent = "no schedule";
           return;
         }
-        const lines = schedule.windows.map((w) => `· ${w.label}`);
-        let str = "Auto-checking on:\n" + lines.join("\n");
         if (schedule.currentlyInWindow) {
-          str += "\n\n🟢 Currently in a scheduled window — polling every minute.";
-        } else if (schedule.nextRun) {
-          const at = new Date(schedule.nextRun.at);
-          str += `\n\nNext run: ${at.toLocaleString([], {
-            weekday: "long",
-            hour: "2-digit",
-            minute: "2-digit",
-            timeZoneName: "short",
-          })}`;
+          help.innerHTML = `<span class="live-now">● scheduled run in progress</span>`;
+          return;
         }
-        help.style.whiteSpace = "pre-line";
-        help.textContent = str;
+        if (schedule.nextRun) {
+          const at = new Date(schedule.nextRun.at);
+          const wd = at.toLocaleString([], { weekday: "short" });
+          const tm = at.toLocaleString([], { hour: "2-digit", minute: "2-digit" });
+          help.textContent = `next auto-check: ${wd} ${tm}`;
+        } else {
+          help.textContent = "no upcoming schedule";
+        }
       }
 
       function renderSources(list) {
