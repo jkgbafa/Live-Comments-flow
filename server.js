@@ -14,6 +14,7 @@ const { WebSocketServer } = require("ws");
 const { YouTubeSource } = require("./lib/youtube-source");
 const { ChannelWatcher } = require("./lib/channel-watcher");
 const { FacebookSource } = require("./lib/facebook-source");
+const { ApifyFacebookSource } = require("./lib/apify-facebook-source");
 const {
   loadChannels,
   saveChannels,
@@ -35,7 +36,28 @@ const MAX_BUFFER = 200;
 const COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 365 * 10; // 10 years (browser caps)
 
 const app = express();
-app.use(express.json());
+// Larger body limit for batched extension uploads (could be 50 comments
+// each with avatar URLs — well under 100 KB but allow some headroom).
+app.use(express.json({ limit: "200kb" }));
+
+// CORS for the Chrome extension. Extension origins look like
+// `chrome-extension://<id>` and we don't know the id ahead of time. We
+// only allow specific endpoints + only when an x-admin-token is present,
+// so reflecting the origin is safe enough for this self-hosted use.
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "";
+  const isExtension =
+    origin.startsWith("chrome-extension://") ||
+    origin.startsWith("moz-extension://");
+  if (isExtension && req.path.startsWith("/api/extension")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Max-Age", "600");
+    if (req.method === "OPTIONS") return res.status(204).end();
+  }
+  next();
+});
 
 // Clean URL for admin: /admin → admin.html. Must be registered BEFORE the
 // static middleware so it wins over any default file matching.
@@ -337,6 +359,70 @@ app.post("/api/clear-recent", requireAdmin, (_req, res) => {
   res.json({ ok: true });
 });
 
+// --- Browser extension push endpoint ---
+// The Chrome extension running on Joshua's laptop scrapes FB Live + YT live
+// chat from the logged-in browser session and POSTs each new comment here.
+// This bypasses:
+//   * FB privacy: API hides commenter name/photo on public live videos.
+//     Browser sees the real names because it's the rendered page.
+//   * YouTube data-center IP throttling: extension runs on residential IP.
+//
+// Auth: same admin token. We treat extension-pushed comments the same as
+// scraped ones — broadcast to viewers, dedupe via the message id.
+function ingestExtensionComment(m) {
+  if (!m || typeof m !== "object") return null;
+  if (typeof m.text !== "string" || !m.text.trim()) return null;
+  const platform = (m.platform === "youtube" ? "youtube" : "facebook");
+  const id =
+    m.id ||
+    `ext:${platform}:${m.videoId || "unknown"}:${m.externalId || Date.now() + ":" + Math.random()}`;
+  const msg = {
+    id,
+    source: platform,
+    platform,
+    via: "extension",
+    videoId: m.videoId || null,
+    streamTitle: m.streamTitle || null,
+    channelName: m.channelName || null,
+    channelId: m.channelId || null,
+    author: m.author || (platform === "facebook" ? "Facebook" : "YouTube viewer"),
+    authorChannelId: m.authorChannelId || null,
+    avatar: m.avatar || null,
+    text: m.text,
+    timestamp: m.timestamp || new Date().toISOString(),
+    isOwner: false,
+    isModerator: false,
+    isVerified: false,
+    membership: false,
+  };
+  rememberMessage(msg);
+  broadcast({ type: "message", message: msg });
+  return msg;
+}
+
+app.post("/api/extension/comment", requireAdmin, (req, res) => {
+  const out = ingestExtensionComment(req.body);
+  if (!out) return res.status(400).json({ error: "invalid comment" });
+  res.json({ ok: true, id: out.id });
+});
+
+// Batched variant: extension can buffer + send 10–50 at a time when traffic
+// is heavy. Avoids hitting Cloudflare/Fly with hundreds of small POSTs/sec.
+app.post("/api/extension/comments", requireAdmin, (req, res) => {
+  const arr = Array.isArray(req.body) ? req.body : req.body?.comments;
+  if (!Array.isArray(arr)) return res.status(400).json({ error: "expected array" });
+  let accepted = 0;
+  for (const c of arr) {
+    if (ingestExtensionComment(c)) accepted++;
+  }
+  res.json({ ok: true, accepted, total: arr.length });
+});
+
+// Health check the extension uses to verify auth before sending comments.
+app.get("/api/extension/ping", requireAdmin, (_req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
+
 // --- Schedule API ---
 app.get("/api/schedule", requireAdmin, (_req, res) => {
   res.json({
@@ -421,6 +507,56 @@ app.post("/api/fb-pages/:id/stop", requireAdmin, async (req, res) => {
   fbState[req.params.id] = { ...(fbState[req.params.id] || {}), enabled: false };
   await persistFbState();
   res.json({ source: src.snapshot() });
+});
+
+// --- Apify fallback: trigger Apify Facebook Comments Scraper on demand ---
+// Maps page id -> active ApifyFacebookSource. Only one per page at a time.
+const apifyFbSources = new Map();
+
+app.post("/api/fb-pages/:id/apify-start", requireAdmin, async (req, res) => {
+  const fb = fbPages.get(req.params.id);
+  if (!fb) return res.status(404).json({ error: "page not found" });
+  if (!process.env.APIFY_TOKEN) {
+    return res.status(400).json({
+      error: "APIFY_TOKEN env not set — add it via fly secrets first",
+    });
+  }
+  if (!fb.currentLiveId) {
+    return res.status(400).json({
+      error: "no live video detected for this page yet",
+    });
+  }
+  if (apifyFbSources.has(req.params.id)) {
+    return res.status(409).json({
+      error: "Apify source already running for this page",
+    });
+  }
+  const videoUrl = `https://www.facebook.com/${req.params.id}/videos/${fb.currentLiveId}`;
+  const src = new ApifyFacebookSource({
+    token: process.env.APIFY_TOKEN,
+    pageId: req.params.id,
+    pageName: fb.pageName,
+    videoId: fb.currentLiveId,
+    videoUrl,
+  });
+  apifyFbSources.set(req.params.id, src);
+  src.on("message", (msg) => {
+    rememberMessage(msg);
+    broadcast({ type: "message", message: msg });
+  });
+  src.on("status", (snap) => {
+    broadcast({ type: "apify_fb_status", source: snap });
+  });
+  await src.start();
+  res.json({ ok: true, source: src.snapshot() });
+});
+
+app.post("/api/fb-pages/:id/apify-stop", requireAdmin, async (req, res) => {
+  const src = apifyFbSources.get(req.params.id);
+  if (!src) return res.status(404).json({ error: "no Apify source running" });
+  await src.stop();
+  apifyFbSources.delete(req.params.id);
+  res.json({ ok: true });
 });
 
 app.delete("/api/fb-pages/:id", requireAdmin, async (req, res) => {

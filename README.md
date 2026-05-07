@@ -172,6 +172,55 @@ Add a Browser Source pointing at your public viewer URL. Suggested width 480, he
 
 **Fly.io deploy says "billing not set up"** — you need to add a payment method (CC) at https://fly.io/dashboard/personal/billing — Fly verifies identity but won't charge if usage stays under the monthly free credit (~$5).
 
+## Browser extension (for full FB names + photos and reliable YT chat)
+
+Facebook strips commenter name/photo from public live-video comments via
+the Graph API, and YouTube throttles data-center IPs. The included
+Chrome extension reads both directly from your logged-in browser tabs
+and pushes them to the server.
+
+**Install (one-time, ~3 minutes):**
+
+1. Open Chrome → `chrome://extensions`
+2. Toggle **Developer mode** (top right)
+3. Click **Load unpacked** → select `~/Claude/live-chat-aggregator/extension/`
+4. Click the new "Flow Live Comments Bridge" icon in the Chrome toolbar →
+   **Open settings**
+5. Server URL: `https://live-comments-flow.fly.dev` (default)
+   Admin token: `FL0W` (or whatever you set)
+6. Click **Save & test** — should show "Connected to ..."
+
+**Use during a broadcast:**
+
+- Open the FB live video in a Chrome tab (logged in to your FB admin
+  account). Leave it open. Extension scrapes new comments → pushes to
+  server → appears in the public viewer with real names and photos.
+- Same for YouTube — open the live page or the live-chat popout. Extension
+  scrapes and forwards.
+- Multiple tabs are fine; the extension dedupes.
+
+**Status check:** Click the extension icon → popup shows server connection,
+queue depth, and a link to the public viewer.
+
+## Apify fallback (in case the extension is unavailable)
+
+If your laptop is off or the extension breaks, you can trigger an Apify
+"Facebook Comments Scraper" actor for any page that's currently live.
+
+1. Sign up at https://apify.com/ (free tier)
+2. Console → Settings → Integrations → copy your API token
+3. Set on Fly:
+   ```
+   fly secrets set APIFY_TOKEN=apify_api_xxx --app live-comments-flow
+   ```
+4. In admin, the Facebook page row will (in a future update) show an
+   "Apify scrape" button. For now, trigger via API:
+   ```
+   curl -X POST https://live-comments-flow.fly.dev/api/fb-pages/PAGE_ID/apify-start \
+     -H "x-admin-token: FL0W"
+   ```
+   Stop with `/apify-stop`. Cost: ~$1.40 per 1,000 comments.
+
 ## Roadmap
 
 - Facebook Live (requires Graph API; deferred until Page admin token + app review)

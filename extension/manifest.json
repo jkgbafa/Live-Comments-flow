@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Flow Live Comments Bridge",
+  "version": "1.0.0",
+  "description": "Reads YouTube and Facebook live chat from your browser and forwards to your Live Comments aggregator. Use during broadcasts.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_page": "options.html",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://*.facebook.com/*",
+    "https://*.youtube.com/*",
+    "https://live-comments-flow.fly.dev/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.facebook.com/*"
+      ],
+      "js": ["content-fb.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/watch*",
+        "https://www.youtube.com/live*",
+        "https://www.youtube.com/live_chat*"
+      ],
+      "js": ["content-yt.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
