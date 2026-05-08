@@ -6,8 +6,50 @@ const chatEl = document.getElementById("chat");
 
 const seen = new Set();
 
+// Drip queue — incoming messages arrive in bursts (masterchat returns
+// per-poll batches), but to feel like YouTube's popout chat we render
+// them one at a time with a small delay. Adaptive: when the queue is
+// small we slow down (so single new comments land smoothly), when it's
+// backed up we speed up so we don't fall behind a busy stream.
+const renderQueue = [];
+let drainTimer = null;
+const DRIP_DELAY_NORMAL_MS = 220;
+const DRIP_DELAY_FAST_MS = 80;
+const DRIP_DELAY_FLOOD_MS = 25;
+
+function pickDelay() {
+  const n = renderQueue.length;
+  if (n > 25) return DRIP_DELAY_FLOOD_MS;
+  if (n > 8) return DRIP_DELAY_FAST_MS;
+  return DRIP_DELAY_NORMAL_MS;
+}
+
+function drain() {
+  if (renderQueue.length === 0) {
+    drainTimer = null;
+    return;
+  }
+  const msg = renderQueue.shift();
+  paintMessage(msg);
+  drainTimer = setTimeout(drain, pickDelay());
+}
+
+function enqueueMessage(msg) {
+  if (!msg || !msg.id) return;
+  if (seen.has(msg.id)) return;
+  seen.add(msg.id);
+  if (seen.size > 5000) {
+    const it = seen.values();
+    for (let i = 0; i < 1000; i++) seen.delete(it.next().value);
+  }
+  renderQueue.push(msg);
+  if (!drainTimer) drainTimer = setTimeout(drain, 0);
+}
+
 function scrollToBottom() {
-  chatEl.scrollTop = chatEl.scrollHeight;
+  // Smooth scroll keeps the newest message animating into view rather than
+  // teleporting it. Pairs with the drip queue + slideIn animation.
+  chatEl.scrollTo({ top: chatEl.scrollHeight, behavior: "smooth" });
 }
 
 function fmtTime(iso) {
@@ -25,15 +67,9 @@ const SOURCE_ICONS = {
   tiktok: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.6 6.7a5.5 5.5 0 0 1-3.4-1.2 5.5 5.5 0 0 1-2-3.6V1.6h-3.5v13.6a3.1 3.1 0 1 1-2.2-3v-3.5a6.6 6.6 0 1 0 5.7 6.5V8.7a8.9 8.9 0 0 0 5.4 1.8V7a5.5 5.5 0 0 1 0-.3z"/></svg>`,
 };
 
-function renderMessage(msg) {
-  if (seen.has(msg.id)) return;
-  seen.add(msg.id);
-  // Cap memory of seen ids
-  if (seen.size > 5000) {
-    const it = seen.values();
-    for (let i = 0; i < 1000; i++) seen.delete(it.next().value);
-  }
-
+// Renders a single message into the DOM. Called by the drain loop, never
+// directly — go through enqueueMessage so the drip cadence kicks in.
+function paintMessage(msg) {
   // Remove "empty" placeholder if present
   const empty = chatEl.querySelector(".empty");
   if (empty) empty.remove();
@@ -125,14 +161,22 @@ function connect() {
       case "init":
         chatEl.innerHTML = "";
         seen.clear();
+        renderQueue.length = 0;
         if (!data.recent || data.recent.length === 0) {
           chatEl.innerHTML = `<div class="empty">Waiting for chat messages…</div>`;
         } else {
-          for (const m of data.recent) renderMessage(m);
+          // On reconnect, paint the backlog INSTANTLY (no drip) so the
+          // viewer doesn't have to watch 50 messages slowly fill in. Only
+          // new messages from this point on use the drip animation.
+          for (const m of data.recent) {
+            if (seen.has(m.id)) continue;
+            seen.add(m.id);
+            paintMessage(m);
+          }
         }
         break;
       case "message":
-        renderMessage(data.message);
+        enqueueMessage(data.message);
         break;
       case "cleared":
         chatEl.innerHTML = `<div class="empty">Cleared.</div>`;
