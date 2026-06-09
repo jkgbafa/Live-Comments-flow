@@ -25,11 +25,20 @@
     return null;
   }
 
+  const log = (...args) => console.log("[bridge-yt]", ...args);
+  log("content script loaded on", location.href);
+
   let videoId = inferVideoId();
   let channelName = inferChannelName();
 
   const seen = new Set();
   const SEEN_CAP = 4000;
+
+  function hash(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+    return ("" + (h >>> 0)).padStart(10, "0");
+  }
 
   function rememberId(id) {
     seen.add(id);
@@ -76,11 +85,6 @@
     ) {
       return null;
     }
-    const id = renderer.id || renderer.getAttribute("id");
-    if (!id) return null;
-    const externalId = "ext:yt:" + (videoId || "noVideo") + ":" + id;
-    if (seen.has(externalId)) return null;
-
     const authorEl = renderer.querySelector("#author-name");
     const photoImg = renderer.querySelector("#author-photo img");
     const messageEl = renderer.querySelector("#message");
@@ -88,6 +92,12 @@
     const author = authorEl ? authorEl.textContent.trim() : null;
     const text = messageEl ? extractText(messageEl) : "";
     if (!author || !text) return null;
+
+    // Prefer YT's own renderer id; fall back to a content hash so we never
+    // silently drop a message just because the id attribute was missing.
+    const rawId = renderer.id || renderer.getAttribute("id") || hash(author + "|" + text);
+    const externalId = "ext:yt:" + (videoId || "noVideo") + ":" + rawId;
+    if (seen.has(externalId)) return null;
 
     return {
       id: externalId,
@@ -125,9 +135,15 @@
       batch.push(msg);
     }
     if (batch.length > 0) {
+      log(`forwarding ${batch.length} new message(s)`);
+      // Fire-and-forget (no callback) so the MV3 service worker tearing down
+      // can't produce "message port closed" errors.
       try {
         chrome.runtime.sendMessage({ type: "comments-batch", payload: batch });
-      } catch (_) {}
+        void chrome.runtime.lastError;
+      } catch (e) {
+        log("sendMessage threw:", e.message);
+      }
     }
   }
 

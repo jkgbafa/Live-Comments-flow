@@ -43,8 +43,15 @@ function rememberId(id) {
 }
 
 async function flushPending() {
+  // The MV3 service worker may have just woken up to handle an incoming
+  // message, before the top-level loadConfig() resolved. If we have queued
+  // comments but no token in memory, reload config from storage first so we
+  // don't drop them.
   if (!cfg.token) {
-    log("flush skipped: no token configured");
+    await loadConfig();
+  }
+  if (!cfg.token) {
+    log("flush skipped: no token configured (set it in extension options)");
     flushTimer = null;
     return;
   }
@@ -105,7 +112,9 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req && req.type === "comment") {
     log(`received single comment from ${sender.tab?.url?.slice(0, 60) || "?"}`);
     enqueue(req.payload);
-    sendResponse({ ok: true, queued: pending.length });
+    // Content script sends fire-and-forget; respond harmlessly in case a
+    // caller (popup) does want an ack.
+    try { sendResponse({ ok: true, queued: pending.length }); } catch (_) {}
     return false;
   }
   if (req && req.type === "comments-batch") {
@@ -114,7 +123,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     if (Array.isArray(req.payload)) {
       for (const m of req.payload) enqueue(m);
     }
-    sendResponse({ ok: true, queued: pending.length });
+    try { sendResponse({ ok: true, queued: pending.length }); } catch (_) {}
     return false;
   }
   if (req && req.type === "ping-server") {
@@ -146,7 +155,10 @@ async function pingServer() {
 }
 
 // Wake the service worker periodically so it doesn't get killed mid-flush.
-chrome.alarms?.create?.("keepAlive", { periodInMinutes: 1 });
+// Alarms are the MV3-sanctioned keep-alive; minimum period is 0.5 min.
+chrome.alarms?.create?.("keepAlive", { periodInMinutes: 0.5 });
 chrome.alarms?.onAlarm?.addListener(() => {
+  // On every wake, make sure config is loaded and drain anything queued.
+  if (!cfg.token) loadConfig();
   if (pending.length > 0 && !flushTimer) flushTimer = setTimeout(flushPending, 100);
 });

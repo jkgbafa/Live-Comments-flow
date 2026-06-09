@@ -178,22 +178,23 @@
     }
     if (batch.length > 0) {
       log(`scan: forwarding ${batch.length} new comment(s) to background`);
-      try {
-        chrome.runtime.sendMessage(
-          { type: "comments-batch", payload: batch },
-          (resp) => {
-            // Reading lastError clears the "port closed" warning when we
-            // don't actually need the response.
-            if (chrome.runtime.lastError) {
-              log("sendMessage err:", chrome.runtime.lastError.message);
-            } else if (resp) {
-              log("background ack:", resp);
-            }
-          }
-        );
-      } catch (e) {
-        log("sendMessage threw:", e.message);
-      }
+      forwardBatch(batch);
+    }
+  }
+
+  // Fire-and-forget send. We deliberately pass NO callback: in Manifest V3
+  // the background service worker is frequently torn down, and a pending
+  // callback then throws "message port closed before a response was
+  // received". Without a callback Chrome still wakes the worker and delivers
+  // the message reliably — we just don't wait for an ack. We read
+  // lastError in a microtask to keep the console clean.
+  function forwardBatch(batch) {
+    try {
+      chrome.runtime.sendMessage({ type: "comments-batch", payload: batch });
+      // Touch lastError so Chrome doesn't log "Unchecked runtime.lastError".
+      void chrome.runtime.lastError;
+    } catch (e) {
+      log("sendMessage threw:", e.message);
     }
   }
 
