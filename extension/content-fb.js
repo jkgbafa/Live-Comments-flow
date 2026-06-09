@@ -113,14 +113,31 @@
     if (!authorEl) return null;
     const author = authorEl.textContent.trim();
 
-    // Avatar: the first <img> inside the article that's not a tiny reaction icon.
+    // Avatar: FB renders the commenter's profile photo as the first <img> in
+    // the article, served from an fbcdn/scontent host. It's often lazy-loaded,
+    // so naturalWidth can be 0 at scan time — don't gate on dimensions. Just
+    // take the first image whose src looks like a real FB CDN image and isn't
+    // a 1x1 tracking pixel or an emoji/sticker.
     let avatar = null;
     for (const img of article.querySelectorAll("img")) {
-      const w = img.naturalWidth || img.width || 0;
-      // Profile pictures are typically >= 32px square.
-      if (img.src && (w >= 24 || /scontent.*\.fb/.test(img.src))) {
-        avatar = img.src;
+      const src = img.src || img.getAttribute("src") || "";
+      if (!src) continue;
+      if (src.startsWith("data:")) continue; // placeholder/blank
+      if (/emoji|sticker|reaction/i.test(src)) continue;
+      if (/fbcdn\.net|scontent/i.test(src)) {
+        avatar = src;
         break;
+      }
+    }
+    // Fallback: if no CDN image matched, take the first non-data <img> that's
+    // reasonably sized (covers theme variations).
+    if (!avatar) {
+      for (const img of article.querySelectorAll("img")) {
+        const src = img.src || "";
+        if (src && !src.startsWith("data:") && !/emoji|sticker|reaction/i.test(src)) {
+          avatar = src;
+          break;
+        }
       }
     }
 

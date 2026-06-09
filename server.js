@@ -369,6 +369,28 @@ app.post("/api/clear-recent", requireAdmin, (_req, res) => {
 //
 // Auth: same admin token. We treat extension-pushed comments the same as
 // scraped ones — broadcast to viewers, dedupe via the message id.
+
+// The FB extension reads the channel name from the live-video URL path, which
+// is a numeric profile id ("100084941564133") or a vanity slug
+// ("daghewardmills.org") — neither is human-friendly. Map known identifiers to
+// the proper page name. Keys are lowercased URL segments / slugs / page ids.
+const FB_NAME_ALIASES = {
+  "100084941564133": "The Flow Church",
+  "theflowchurch": "The Flow Church",
+  "108294972006462": "The Flow Church",
+  "daghewardmills.org": "Dag Heward-Mills",
+  "daghewardmills": "Dag Heward-Mills",
+  "112564093622": "Dag Heward-Mills",
+  "daghewardmillsfr": "Dag Heward-Mills en Français",
+  "193810450659841": "Dag Heward-Mills en Français",
+};
+
+function friendlyChannelName(raw) {
+  if (!raw) return raw;
+  const key = String(raw).trim().toLowerCase();
+  return FB_NAME_ALIASES[key] || raw;
+}
+
 function ingestExtensionComment(m) {
   if (!m || typeof m !== "object") return null;
   if (typeof m.text !== "string" || !m.text.trim()) return null;
@@ -383,7 +405,7 @@ function ingestExtensionComment(m) {
     via: "extension",
     videoId: m.videoId || null,
     streamTitle: m.streamTitle || null,
-    channelName: m.channelName || null,
+    channelName: friendlyChannelName(m.channelName) || null,
     channelId: m.channelId || null,
     author: m.author || (platform === "facebook" ? "Facebook" : "YouTube viewer"),
     authorChannelId: m.authorChannelId || null,
