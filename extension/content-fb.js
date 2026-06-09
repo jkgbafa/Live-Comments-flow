@@ -19,16 +19,19 @@
   // Don't run on FB sub-frames that aren't the main live-video page (FB has
   // many iframes for ads, video player, etc.).
   if (window.top !== window) {
-    // Allow if the URL clearly looks like a live-comments-only iframe.
     if (!/comments/i.test(location.pathname) && !/live/i.test(location.pathname)) {
       return;
     }
   }
 
+  const log = (...args) => console.log("[bridge-fb]", ...args);
+  log("content script loaded on", location.href);
+
   const SCAN_INTERVAL_MS = 2500;
   const seen = new Set();
   const SEEN_CAP = 4000;
   let context = inferContext();
+  log("context:", context);
 
   function inferContext() {
     // Try to extract the page name and live-video id from the URL.
@@ -174,9 +177,23 @@
       } catch (_) {}
     }
     if (batch.length > 0) {
+      log(`scan: forwarding ${batch.length} new comment(s) to background`);
       try {
-        chrome.runtime.sendMessage({ type: "comments-batch", payload: batch });
-      } catch (_) {}
+        chrome.runtime.sendMessage(
+          { type: "comments-batch", payload: batch },
+          (resp) => {
+            // Reading lastError clears the "port closed" warning when we
+            // don't actually need the response.
+            if (chrome.runtime.lastError) {
+              log("sendMessage err:", chrome.runtime.lastError.message);
+            } else if (resp) {
+              log("background ack:", resp);
+            }
+          }
+        );
+      } catch (e) {
+        log("sendMessage threw:", e.message);
+      }
     }
   }
 
@@ -196,16 +213,26 @@
   }
 
   let attached = false;
+  let lastAttachLog = 0;
   function tryAttach() {
-    if (!attached) attached = attach();
-    // Even after attach, run a full scan periodically in case mutations got
-    // missed (e.g. virtualized list re-renders).
+    if (!attached) {
+      attached = attach();
+      if (attached) {
+        const c = findCommentsContainer();
+        const existing = c ? c.querySelectorAll('div[role="article"]').length : 0;
+        log(`attached. indexed ${existing} existing comment(s) (will only forward new ones from here)`);
+      }
+    }
     if (attached) {
       const c = findCommentsContainer();
       scan(c);
     } else {
-      // Re-update context — URL might change without a full page navigate
-      // (FB is a single-page app).
+      // Quiet periodic log every ~10s so we don't flood
+      if (Date.now() - lastAttachLog > 10000) {
+        const all = document.querySelectorAll('div[role="article"]').length;
+        log(`not attached yet. total articles on page: ${all}`);
+        lastAttachLog = Date.now();
+      }
       context = inferContext();
     }
   }

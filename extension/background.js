@@ -15,10 +15,15 @@ let flushTimer = null;
 const recentlySentIds = new Set(); // simple in-memory dedup
 const RECENT_CAP = 4000;
 
+function log(...args) {
+  console.log("[bridge]", ...args);
+}
+
 async function loadConfig() {
   const stored = await chrome.storage.sync.get(["serverUrl", "token"]);
   cfg.serverUrl = stored.serverUrl || DEFAULT_SERVER;
   cfg.token = stored.token || "";
+  log("config loaded:", { serverUrl: cfg.serverUrl, hasToken: !!cfg.token });
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -38,13 +43,18 @@ function rememberId(id) {
 }
 
 async function flushPending() {
-  if (!cfg.token || pending.length === 0) {
+  if (!cfg.token) {
+    log("flush skipped: no token configured");
     flushTimer = null;
     return;
   }
-  // Take up to 50 at a time, batched.
+  if (pending.length === 0) {
+    flushTimer = null;
+    return;
+  }
   const batch = pending.splice(0, 50);
   const url = cfg.serverUrl.replace(/\/$/, "") + "/api/extension/comments";
+  log(`flushing ${batch.length} → ${url}`);
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -54,9 +64,14 @@ async function flushPending() {
       },
       body: JSON.stringify(batch.map((p) => p.msg)),
     });
-    if (!res.ok) throw new Error("HTTP " + res.status);
+    if (!res.ok) {
+      log(`flush failed: HTTP ${res.status}`);
+      throw new Error("HTTP " + res.status);
+    }
+    const body = await res.json().catch(() => ({}));
+    log(`flush ok:`, body);
   } catch (err) {
-    // Re-queue for retry, with backoff via incremented attempts.
+    log(`flush error: ${err.message} — re-queueing`);
     for (const p of batch) {
       p.attempts = (p.attempts || 0) + 1;
       if (p.attempts < 6) pending.unshift(p);
@@ -70,20 +85,32 @@ async function flushPending() {
 }
 
 function enqueue(msg) {
-  if (!msg || !msg.text) return;
-  if (msg.id && recentlySentIds.has(msg.id)) return;
+  if (!msg) {
+    log("enqueue skipped: null msg");
+    return;
+  }
+  if (!msg.text) {
+    log("enqueue skipped: no text on msg", { id: msg.id, author: msg.author });
+    return;
+  }
+  if (msg.id && recentlySentIds.has(msg.id)) {
+    return; // silent dedup
+  }
   if (msg.id) rememberId(msg.id);
   pending.push({ msg, attempts: 0 });
   if (!flushTimer) flushTimer = setTimeout(flushPending, 250);
 }
 
-chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req && req.type === "comment") {
+    log(`received single comment from ${sender.tab?.url?.slice(0, 60) || "?"}`);
     enqueue(req.payload);
     sendResponse({ ok: true, queued: pending.length });
     return false;
   }
   if (req && req.type === "comments-batch") {
+    const n = Array.isArray(req.payload) ? req.payload.length : 0;
+    log(`received batch of ${n} from ${sender.tab?.url?.slice(0, 60) || "?"}`);
     if (Array.isArray(req.payload)) {
       for (const m of req.payload) enqueue(m);
     }
