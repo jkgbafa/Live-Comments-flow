@@ -9,19 +9,43 @@
 //   - Forward as platform:"youtube" with a stable id from YT's own
 //     elements.id attribute (each renderer has a unique id).
 (function () {
-  // Extract videoId from the iframe URL if present.
+  // Extract videoId. The live-chat iframe URL (embedded on a watch page) has
+  // NO ?v=, so we must also look at the parent watch page. YouTube's watch page
+  // and its live_chat iframe are both on www.youtube.com — same origin — so the
+  // iframe content script can read window.top.location safely.
   function inferVideoId() {
-    const m = location.href.match(/[?&]v=([A-Za-z0-9_-]{11})/);
-    return m ? m[1] : null;
+    // 1) This frame's own URL (covers the live_chat popout and the watch page).
+    let m = location.href.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    // 2) The parent/top watch page URL (covers the embedded chat iframe).
+    try {
+      if (window.top && window.top !== window) {
+        m = (window.top.location.href || "").match(/[?&]v=([A-Za-z0-9_-]{11})/);
+        if (m) return m[1];
+      }
+    } catch (_) {
+      // cross-origin (shouldn't happen on youtube.com) — ignore
+    }
+    return null;
   }
 
   function inferChannelName() {
-    // For the iframe context, look at the parent doc title via referrer
-    // (won't always work; fall back to the page title meta).
+    // Prefer the channel name from the watch page DOM (top frame, same origin).
+    // This is the channel the live stream belongs to — exactly what we want on
+    // the pill. The server also backfills from videoId, so this is a hint.
+    try {
+      const doc =
+        window.top && window.top !== window ? window.top.document : document;
+      const el = doc.querySelector(
+        "ytd-channel-name#channel-name a, #owner #channel-name a, " +
+          "ytd-video-owner-renderer #channel-name a, #upload-info #channel-name a"
+      );
+      if (el && el.textContent.trim()) return el.textContent.trim();
+    } catch (_) {
+      // cross-origin or DOM not ready — ignore
+    }
     const ogTitle = document.querySelector('meta[property="og:title"]');
     if (ogTitle?.content) return ogTitle.content;
-    // Live chat iframe doesn't include channel name. We'll rely on the
-    // server to attach the channel name via its own mapping.
     return null;
   }
 
@@ -173,6 +197,9 @@
       seen.clear();
       attached = false;
     }
+    // The watch page DOM (where the channel name lives) often isn't ready when
+    // the iframe script first runs. Keep re-resolving until we have a name.
+    if (!channelName) channelName = inferChannelName();
     if (!attached) attached = attach();
     else scanAndForward(findChatContainer());
   }

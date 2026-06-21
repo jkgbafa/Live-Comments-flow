@@ -391,6 +391,21 @@ function friendlyChannelName(raw) {
   return FB_NAME_ALIASES[key] || raw;
 }
 
+// Extension-scraped YouTube comments arrive without a channel name — the
+// live-chat iframe can't see which channel it belongs to. But the server is
+// already watching these channels and knows each one's current live videoId,
+// so we backfill the friendly channel name by matching the comment's videoId
+// against the watchers. Returns null if no watched channel is on that video.
+function channelNameForVideoId(videoId) {
+  if (!videoId) return null;
+  for (const ch of channels.values()) {
+    if (ch.currentVideoId && ch.currentVideoId === videoId) {
+      return ch.name || ch.displayName || null;
+    }
+  }
+  return null;
+}
+
 function ingestExtensionComment(m) {
   if (!m || typeof m !== "object") return null;
   if (typeof m.text !== "string" || !m.text.trim()) return null;
@@ -405,7 +420,10 @@ function ingestExtensionComment(m) {
     via: "extension",
     videoId: m.videoId || null,
     streamTitle: m.streamTitle || null,
-    channelName: friendlyChannelName(m.channelName) || null,
+    channelName:
+      friendlyChannelName(m.channelName) ||
+      channelNameForVideoId(m.videoId) ||
+      null,
     channelId: m.channelId || null,
     author: m.author || (platform === "facebook" ? "Facebook" : "YouTube viewer"),
     authorChannelId: m.authorChannelId || null,
