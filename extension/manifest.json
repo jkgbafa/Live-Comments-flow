@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Flow Live Comments Bridge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Reads YouTube and Facebook live chat from your browser and forwards to your Live Comments aggregator. Use during broadcasts.",
   "icons": {
     "16": "icons/icon-16.png",

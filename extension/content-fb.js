@@ -1,59 +1,54 @@
 // Facebook live-comments scraper — runs as a content script on facebook.com.
 //
-// Strategy:
-//   1. Find the comments container on a Live Video page. FB obfuscates class
-//      names so we use semantic / role-based selectors that have been stable.
-//   2. Index existing comments (so the first scan doesn't dump the entire
-//      backlog).
-//   3. MutationObserver watches the container. New comment nodes get parsed
-//      and forwarded to the background script.
+// 2026 layout (verified live): each comment is a
+//   <div aria-label="Comment by <Name> <n> <unit> ago" role="article">
+// The commenter's REAL name is in the aria-label itself (so we sidestep the
+// "Facebook User" anonymization the Graph API suffers from), the body is the
+// longest dir="auto" text block inside, and the avatar is an fbcdn/scontent
+// <img>. The OLD approach keyed on div[role="article"] + "nearest common
+// parent", which broke because FB moved comments out of plain articles and the
+// article role only appears once the comment list renders — so it captured 0.
 //
-// What we extract from each comment:
-//   - author (name as text content of the author link)
-//   - avatar (img src on the author photo element)
-//   - text (the comment body)
-//   - timestamp (relative — FB shows "1m" etc., so we use Date.now())
-//   - a stable unique id we synthesize (since FB doesn't expose comment IDs
-//     in DOM attributes reliably)
+// Strategy now: every ~2s, grab all `div[aria-label^="Comment by"]`, parse
+// author from the label and text/avatar from inside, dedupe by a stable
+// author+text hash, and forward new ones to the background script. The first
+// scan only indexes what's already there (no backlog dump); comments that
+// arrive after we start watching get forwarded.
 (function () {
-  // Don't run on FB sub-frames that aren't the main live-video page (FB has
-  // many iframes for ads, video player, etc.).
-  if (window.top !== window) {
-    if (!/comments/i.test(location.pathname) && !/live/i.test(location.pathname)) {
-      return;
-    }
-  }
-
-  const log = (...args) => console.log("[bridge-fb]", ...args);
+  const log = (...a) => console.log("[bridge-fb]", ...a);
   log("content script loaded on", location.href);
 
-  const SCAN_INTERVAL_MS = 2500;
+  const SCAN_INTERVAL_MS = 2000;
   const seen = new Set();
-  const SEEN_CAP = 4000;
+  const SEEN_CAP = 5000;
+  let primed = false; // first populated scan indexes existing comments only
+  let lastUrl = location.href;
   let context = inferContext();
   log("context:", context);
 
   function inferContext() {
-    // Try to extract the page name and live-video id from the URL.
-    // Common patterns:
-    //   /<page-handle>/videos/<numeric-id>/...
-    //   /<page-handle>/live/...
-    //   /watch?v=<numeric-id>
-    //   /<page-handle>?... (fb live homepage)
     const path = location.pathname;
     const url = location.href;
     const out = { channelName: null, channelId: null, videoId: null };
-    const m1 = path.match(/^\/([^\/]+)\/videos\/(\d+)/);
-    if (m1) {
-      out.channelName = decodeURIComponent(m1[1]);
-      out.videoId = m1[2];
+    // /<page>/videos/<id>/...
+    let m = path.match(/^\/([^\/]+)\/videos\/(\d+)/);
+    if (m) {
+      out.channelName = decodeURIComponent(m[1]);
+      out.videoId = m[2];
     }
-    const m2 = url.match(/[?&]v=(\d+)/);
-    if (m2 && !out.videoId) out.videoId = m2[1];
-    // Try og:title for a friendlier channel name.
-    const ogTitle = document.querySelector('meta[property="og:title"]');
-    if (ogTitle && !out.channelName) out.channelName = ogTitle.content;
+    // /watch/live/?v=<id> and other ?v= forms
+    m = url.match(/[?&]v=(\d+)/);
+    if (m && !out.videoId) out.videoId = m[1];
+    // og:title gives a friendlier page name when the handle isn't in the path.
+    const og = document.querySelector('meta[property="og:title"]');
+    if (og && og.content && !out.channelName) out.channelName = og.content;
     return out;
+  }
+
+  function hash(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+    return ("" + (h >>> 0)).padStart(10, "0");
   }
 
   function rememberId(id) {
@@ -64,108 +59,41 @@
     }
   }
 
-  // Hash a string into a short stable id, for synthesizing comment ids when
-  // FB doesn't give us one.
-  function hash(str) {
-    let h = 5381;
-    for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
-    return ("" + (h >>> 0)).padStart(10, "0");
-  }
+  function extractComment(el) {
+    const aria = el.getAttribute("aria-label") || "";
+    // Author from the aria-label: "Comment by <NAME> <n> <unit> ago".
+    let author = null;
+    const m = aria.match(
+      /^Comment by\s+(.+?)\s+\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago/i
+    );
+    author = m ? m[1].trim() : aria.replace(/^Comment by\s+/i, "").trim() || null;
+    if (!author) return null;
 
-  function findCommentsContainer() {
-    // FB renders comments in a list under various roles. Look for the most
-    // common ancestor of comment-shaped articles.
-    const articles = document.querySelectorAll('div[role="article"]');
-    if (articles.length === 0) return null;
-    // Pick a reasonable parent that actually contains multiple articles.
-    const parents = new Map();
-    for (const a of articles) {
-      const p = a.parentElement;
-      if (!p) continue;
-      parents.set(p, (parents.get(p) || 0) + 1);
-    }
-    let best = null;
-    let bestCount = 0;
-    for (const [p, c] of parents) {
-      if (c > bestCount) {
-        best = p;
-        bestCount = c;
-      }
-    }
-    return best;
-  }
-
-  function extractComment(article) {
-    // Skip articles that aren't live comments — exclude posts, ads, etc.
-    // Heuristic: a live comment has 1 author link and short-ish content.
-    const links = article.querySelectorAll('a[role="link"]');
-    if (links.length === 0) return null;
-
-    // Author: first link with a non-empty text (the commenter name).
-    let authorEl = null;
-    for (const l of links) {
-      const t = (l.textContent || "").trim();
-      if (t && t.length < 80) {
-        authorEl = l;
-        break;
-      }
-    }
-    if (!authorEl) return null;
-    const author = authorEl.textContent.trim();
-
-    // Avatar: FB renders the commenter's profile photo as the first <img> in
-    // the article, served from an fbcdn/scontent host. It's often lazy-loaded,
-    // so naturalWidth can be 0 at scan time — don't gate on dimensions. Just
-    // take the first image whose src looks like a real FB CDN image and isn't
-    // a 1x1 tracking pixel or an emoji/sticker.
-    let avatar = null;
-    for (const img of article.querySelectorAll("img")) {
-      const src = img.src || img.getAttribute("src") || "";
-      if (!src) continue;
-      if (src.startsWith("data:")) continue; // placeholder/blank
-      if (/emoji|sticker|reaction/i.test(src)) continue;
-      if (/fbcdn\.net|scontent/i.test(src)) {
-        avatar = src;
-        break;
-      }
-    }
-    // Fallback: if no CDN image matched, take the first non-data <img> that's
-    // reasonably sized (covers theme variations).
-    if (!avatar) {
-      for (const img of article.querySelectorAll("img")) {
-        const src = img.src || "";
-        if (src && !src.startsWith("data:") && !/emoji|sticker|reaction/i.test(src)) {
-          avatar = src;
-          break;
-        }
-      }
-    }
-
-    // Comment text: try common containers. FB puts comment body in dir="auto".
+    // Body: the longest dir="auto" block that isn't the author or a timestamp.
     let text = "";
-    const dirAuto = article.querySelectorAll('div[dir="auto"]');
-    for (const d of dirAuto) {
-      const t = (d.textContent || "").trim();
-      // Skip the author node itself, timestamps ("1m", "Just now"), and reactions.
-      if (!t || t === author || /^\d+[smhd]$/.test(t) || /^Just now$/i.test(t))
-        continue;
-      // Take the longest dir=auto block — that's almost always the comment body.
+    for (const d of el.querySelectorAll('[dir="auto"]')) {
+      let t = (d.textContent || "").trim();
+      if (!t || t === author) continue;
+      if (/^\d+\s*[smhdw]$/i.test(t) || /^(just now|now)$/i.test(t)) continue;
+      t = t.replace(/\s*See more$/i, "").replace(/…$/, "").trim();
       if (t.length > text.length) text = t;
     }
-    if (!text) return null;
+    if (!text) return null; // sticker/photo-only comment — skip
 
-    // Synthesize a stable id from author+text content. FB sometimes assigns
-    // numeric ids on data-comment-id attributes — prefer those when present.
-    let externalId = null;
-    const dc = article.getAttribute("data-comment-id");
-    if (dc) externalId = dc;
-    else {
-      // Look for any descendant carrying a comment id.
-      const idEl = article.querySelector("[data-commentid], [data-comment-id]");
-      if (idEl) externalId = idEl.getAttribute("data-commentid") || idEl.getAttribute("data-comment-id");
+    // Avatar: first fbcdn/scontent image inside the comment (often lazy-loaded;
+    // don't gate on dimensions).
+    let avatar = null;
+    for (const img of el.querySelectorAll("img")) {
+      const s = img.currentSrc || img.src || "";
+      if (/fbcdn|scontent/i.test(s)) {
+        avatar = s;
+        break;
+      }
     }
-    const id = "ext:fb:" + (context.videoId || "noVideo") + ":" + (externalId || hash(author + "|" + text));
 
+    // Stable id from author+text (NOT the relative time, which changes each
+    // render). videoId scopes it to the broadcast.
+    const id = "ext:fb:" + (context.videoId || "noVideo") + ":" + hash(author + "|" + text);
     return {
       id,
       platform: "facebook",
@@ -180,81 +108,61 @@
     };
   }
 
-  function scan(container) {
-    if (!container) return;
-    const articles = container.querySelectorAll('div[role="article"]');
-    const batch = [];
-    for (const a of articles) {
-      try {
-        const c = extractComment(a);
-        if (!c) continue;
-        if (seen.has(c.id)) continue;
-        rememberId(c.id);
-        batch.push(c);
-      } catch (_) {}
-    }
-    if (batch.length > 0) {
-      log(`scan: forwarding ${batch.length} new comment(s) to background`);
-      forwardBatch(batch);
-    }
+  function commentNodes() {
+    // Skip "Leave a comment" / "Hide comments" buttons that share the prefix.
+    return [...document.querySelectorAll('div[aria-label^="Comment by" i]')].filter(
+      (el) => el.getAttribute("role") !== "button"
+    );
   }
 
-  // Fire-and-forget send. We deliberately pass NO callback: in Manifest V3
-  // the background service worker is frequently torn down, and a pending
-  // callback then throws "message port closed before a response was
-  // received". Without a callback Chrome still wakes the worker and delivers
-  // the message reliably — we just don't wait for an ack. We read
-  // lastError in a microtask to keep the console clean.
   function forwardBatch(batch) {
     try {
       chrome.runtime.sendMessage({ type: "comments-batch", payload: batch });
-      // Touch lastError so Chrome doesn't log "Unchecked runtime.lastError".
-      void chrome.runtime.lastError;
+      void chrome.runtime.lastError; // keep MV3 console clean
     } catch (e) {
       log("sendMessage threw:", e.message);
     }
   }
 
-  let observer = null;
-  function attach() {
-    const c = findCommentsContainer();
-    if (!c) return false;
-    if (observer) observer.disconnect();
-    // Initial: index existing without forwarding (so we don't dump backlog).
-    for (const a of c.querySelectorAll('div[role="article"]')) {
-      const m = extractComment(a);
-      if (m) rememberId(m.id);
-    }
-    observer = new MutationObserver(() => scan(c));
-    observer.observe(c, { childList: true, subtree: true });
-    return true;
-  }
-
-  let attached = false;
-  let lastAttachLog = 0;
-  function tryAttach() {
-    if (!attached) {
-      attached = attach();
-      if (attached) {
-        const c = findCommentsContainer();
-        const existing = c ? c.querySelectorAll('div[role="article"]').length : 0;
-        log(`attached. indexed ${existing} existing comment(s) (will only forward new ones from here)`);
-      }
-    }
-    if (attached) {
-      const c = findCommentsContainer();
-      scan(c);
-    } else {
-      // Quiet periodic log every ~10s so we don't flood
-      if (Date.now() - lastAttachLog > 10000) {
-        const all = document.querySelectorAll('div[role="article"]').length;
-        log(`not attached yet. total articles on page: ${all}`);
-        lastAttachLog = Date.now();
-      }
+  function scan() {
+    // SPA navigation to a different video → re-prime for the new stream.
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
       context = inferContext();
+      seen.clear();
+      primed = false;
+      log("url changed → re-priming for", context.videoId);
+    }
+    if (!context.videoId) context = inferContext();
+
+    const nodes = commentNodes();
+    const batch = [];
+    for (const el of nodes) {
+      let c;
+      try {
+        c = extractComment(el);
+      } catch (_) {
+        continue;
+      }
+      if (!c || seen.has(c.id)) continue;
+      rememberId(c.id);
+      if (primed) batch.push(c);
+    }
+
+    if (!primed) {
+      // Wait until comments actually exist, then index them as backlog.
+      if (nodes.length > 0) {
+        primed = true;
+        log(`primed: indexed ${nodes.length} existing comment(s); forwarding new ones from here`);
+      }
+      return;
+    }
+    if (batch.length > 0) {
+      log(`forwarding ${batch.length} new comment(s)`);
+      forwardBatch(batch);
     }
   }
 
-  setInterval(tryAttach, SCAN_INTERVAL_MS);
-  tryAttach();
+  setInterval(scan, SCAN_INTERVAL_MS);
+  scan();
 })();
